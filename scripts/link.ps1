@@ -3,8 +3,7 @@
 #   pwsh -NoProfile -File scripts\link.ps1                        показать состояние связи
 #
 # Состояние связи определяет link-state.ps1; здесь — запись обеих сторон и показ
-# состояния человеку. Указатель ставится в локальный git config копии, встречная
-# запись — в файл принадлежности базы; почему сторон именно две — CLAUDE.md.
+# состояния человеку. Почему сторон именно две — CLAUDE.md.
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
     [string]$Base,

@@ -1,5 +1,5 @@
-# agents-kit: самотест механизма адресации.
-#   pwsh -NoProfile -File scripts\selftest.ps1 [-KeepTemp]
+# agents-kit: цела ли адресация базы после правки механизма.
+#   pwsh -NoProfile -File scripts\check-addressing.ps1 [-KeepTemp]
 #
 # Строит тестовые каталоги во временной папке, гоняет через настоящий хук каждый
 # случай, который обязан отличаться от соседнего, и убирает за собой. Проверять
@@ -14,14 +14,14 @@ try { [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false) } catc
 $hook = Join-Path $PSScriptRoot 'session-start.ps1'
 $link = Join-Path $PSScriptRoot 'link.ps1'
 $init = Join-Path $PSScriptRoot 'base-init.ps1'
-$root = Join-Path ([System.IO.Path]::GetTempPath()) ("agents-kit-selftest-" + [guid]::NewGuid().ToString('N').Substring(0, 8))
+$root = Join-Path ([System.IO.Path]::GetTempPath()) ("agents-kit-check-" + [guid]::NewGuid().ToString('N').Substring(0, 8))
 
 # Первый коммит базы делает base-init.ps1 сам, и без этих переменных он зависел бы
 # от глобального конфига машины — проверка стала бы плавающей.
-$env:GIT_AUTHOR_NAME = 'selftest'
-$env:GIT_AUTHOR_EMAIL = 'selftest@local'
-$env:GIT_COMMITTER_NAME = 'selftest'
-$env:GIT_COMMITTER_EMAIL = 'selftest@local'
+$env:GIT_AUTHOR_NAME = 'agents-kit-check'
+$env:GIT_AUTHOR_EMAIL = 'check@local'
+$env:GIT_COMMITTER_NAME = 'agents-kit-check'
+$env:GIT_COMMITTER_EMAIL = 'check@local'
 
 $script:passed = 0
 $script:failed = 0
@@ -80,8 +80,8 @@ function Invoke-BaseInit([string]$Dir) {
 function New-TestRepo([string]$Path) {
     New-Item -ItemType Directory -Force -Path $Path | Out-Null
     & git -C $Path init -q
-    & git -C $Path config user.email 'selftest@local'
-    & git -C $Path config user.name 'selftest'
+    & git -C $Path config user.email 'check@local'
+    & git -C $Path config user.name 'agents-kit-check'
     Set-Content -LiteralPath (Join-Path $Path 'a.txt') -Value 'x'
     & git -C $Path add a.txt
     & git -C $Path commit -qm init | Out-Null
