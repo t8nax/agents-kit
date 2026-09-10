@@ -1,0 +1,15 @@
+{
+  "description": "agents-kit: находит базу знаний проекта по указателю в git config и подаёт сессии её путь вместе с инвариантами кита",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "pwsh -NoProfile -File \"${CLAUDE_PLUGIN_ROOT}/scripts/session-start.ps1\""
+          }
+        ]
+      }
+    ]
+  }
+}

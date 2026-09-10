@@ -1,0 +1,14 @@
+{
+  "name": "agents-kit",
+  "description": "Агентский кит для Claude Code.",
+  "owner": {
+    "name": "Boris"
+  },
+  "plugins": [
+    {
+      "name": "agents-kit",
+      "source": "./",
+      "description": "Агент делает инженерную работу, человек — оператор. Знание проекта живёт отдельным репозиторием базы знаний."
+    }
+  ]
+}
