@@ -1,4 +1,5 @@
-# agents-kit: цела ли адресация базы после правки механизма.
+# agents-kit: то ли получает сессия в каждом состоянии связи с базой — и молчит ли
+# кит там, где его не звали.
 #   pwsh -NoProfile -File scripts\check-addressing.ps1 [-KeepTemp]
 #
 # Строит тестовые каталоги во временной папке, гоняет через настоящий хук каждый
@@ -58,6 +59,13 @@ function ExpectText([string]$Dir, [string]$Needle) {
     $got = Invoke-Hook $Dir
     if (-not $got) { return "ожидался текст про «$Needle», хук промолчал" }
     if ($got -notmatch [regex]::Escape($Needle)) { return "в ответе нет «$Needle»: $($got.Split("`n")[0])" }
+    return $null
+}
+
+function ExpectNoText([string]$Dir, [string]$Needle) {
+    $got = Invoke-Hook $Dir
+    if (-not $got) { return "хук промолчал — проверять нечего" }
+    if ($got -match [regex]::Escape($Needle)) { return "в ответе есть «$Needle», хотя его там быть не должно" }
     return $null
 }
 
@@ -145,6 +153,23 @@ try {
     Check 'связанная копия — инварианты в контексте' { ExpectText $repo 'Три слоя' }
     Check 'связанная копия — путь раскладки в контексте' { ExpectText $repo 'base-layout.md' }
     Check 'связанная копия — отчёт link.ps1 зелёный' { ExpectLinkReport $repo 0 'связь двусторонняя' }
+
+    # Знание базы подаётся содержимым: ради этого база и заведена. Проверяется на
+    # строке, которой неоткуда взяться нигде, кроме файла базы.
+    Check 'связанная копия — содержимое базы в контексте' {
+        Set-Content -LiteralPath (Join-Path $base 'product.md') -Encoding utf8 `
+            -Value '# Продукт', '', 'сверка остатков идёт ночным прогоном'
+        return ExpectText $repo 'сверка остатков идёт ночным прогоном'
+    }
+
+    # Закомментированный пример из шаблона — тот случай, ради которого хук режет комментарии.
+    Check 'пример из HTML-комментария в контекст не попадает' { ExpectNoText $repo 'EF Core' }
+
+    # Один пропавший файл не должен уносить с собой подачу остальных.
+    Check 'файла базы нет — подача остального цела' {
+        Remove-Item -LiteralPath (Join-Path $base 'boundaries.md') -Force
+        return ExpectText $repo 'сверка остатков идёт ночным прогоном'
+    }
 
     Copy-Item -LiteralPath $repo -Destination $copy -Recurse -Force
     Check 'копия каталога вместе с .git — остановка' { ExpectText $copy 'не числит эту рабочую копию' }

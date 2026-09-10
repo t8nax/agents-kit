@@ -15,6 +15,41 @@ function Emit([string]$Text) {
     $payload | ConvertTo-Json -Depth 5 -Compress
 }
 
+# Знание базы подаётся содержимым, а не путём: его читает каждая сессия, а не только
+# та, что пишет. Списка файлов здесь нет намеренно — он стал бы вторыми правилами
+# раскладки рядом с base-layout.md и разъехался бы с ней молча; берётся то, что лежит
+# в корне базы. Подкаталоги не трогаются: в корне и лежит обязательное к прочтению.
+function Read-KitBaseKnowledge([string]$BaseDir) {
+    try {
+        $files = @(Get-ChildItem -LiteralPath $BaseDir -File -ErrorAction Stop |
+            Where-Object { $_.Extension -ieq '.md' } | Sort-Object Name)
+    }
+    catch { return '' }
+
+    $blocks = @()
+    foreach ($file in $files) {
+        # Нечитаемый файл пропускается поодиночке: уронив подачу целиком, хук оставил бы
+        # сессию без базы, а молчание в ветке Linked неотличимо от «репозиторий не под китом».
+        try { $text = Get-Content -LiteralPath $file.FullName -Raw -ErrorAction Stop } catch { continue }
+        if (-not $text) { continue }
+        # Комментарий до сессии не доходит. Иначе закомментированный пример из шаблона
+        # приезжает в контекст как факт проекта, и отличить его от факта нечем.
+        $text = ([regex]::Replace($text, '(?s)<!--.*?-->', '')).Trim()
+        if (-not $text) { continue }
+        $blocks += "**$($file.Name)**`n`n$text"
+    }
+    if (-not $blocks) { return '' }
+
+    return @"
+
+---
+
+Ниже — файлы базы целиком. Это знание проекта, и в этой сессии оно действует. Правила ведения этих файлов — по пути раскладки выше.
+
+$($blocks -join "`n`n")
+"@
+}
+
 try {
     . (Join-Path $PSScriptRoot 'link-state.ps1')
 
@@ -71,6 +106,7 @@ try {
             if (Test-Path -LiteralPath $invPath -PathType Leaf) {
                 $invariants = (Get-Content -LiteralPath $invPath -Raw).Trim()
             }
+            $knowledge = Read-KitBaseKnowledge $state.base
             # Раскладка подаётся путём, а не текстом: правила нужны только той сессии,
             # что пишет в базу. Путь считается в момент запуска и в файлы кита не попадает.
             $layoutLine = ''
@@ -87,6 +123,7 @@ try {
 Знание этого проекта живёт в базе и только там. Ниже — инварианты кита; они действуют в этой сессии всегда.
 
 $invariants
+$knowledge
 "@
         }
     }
