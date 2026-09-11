@@ -1,6 +1,6 @@
-# agents-kit: то ли получает сессия в каждом состоянии связи с базой — и молчит ли
-# кит там, где его не звали.
-#   pwsh -NoProfile -File scripts\check-addressing.ps1 [-KeepTemp]
+# agents-kit: то ли получает сессия на старте — в каждом состоянии связи с базой и на
+# любой ветке — и молчит ли кит там, где его не звали.
+#   pwsh -NoProfile -File scripts\check-session.ps1 [-KeepTemp]
 #
 # Строит тестовые каталоги во временной папке, гоняет через настоящий хук каждый
 # случай, который обязан отличаться от соседнего, и убирает за собой. Проверять
@@ -171,6 +171,38 @@ try {
         return ExpectText $repo 'сверка остатков идёт ночным прогоном'
     }
 
+    # Память задачи адресуется веткой. Проверяется именно разделение: своя приезжает,
+    # соседняя — нет. Ошибка здесь стоит того, что сессия продолжит чужую работу.
+    $branch = ((& git -C $repo branch --show-current) | Select-Object -First 1).ToString().Trim()
+    $work = Join-Path $base 'work'
+    New-Item -ItemType Directory -Force -Path $work | Out-Null
+
+    Check 'памяти нет — сессия получает её адрес' { ExpectText $repo "work\$branch.md" }
+
+    Check 'память своей ветки — в контексте' {
+        Set-Content -LiteralPath (Join-Path $work "$branch.md") -Encoding utf8 `
+            -Value '# Разбор накладной', '- Следующий шаг: дочитать формат позиции'
+        return ExpectText $repo 'дочитать формат позиции'
+    }
+
+    Check 'память соседней ветки — не в контексте' {
+        Set-Content -LiteralPath (Join-Path $work 'neighbour.md') -Encoding utf8 `
+            -Value '- Следующий шаг: это работа соседней ветки'
+        return ExpectNoText $repo 'это работа соседней ветки'
+    }
+
+    # Слэш в имени ветки — обычное дело, и путь он задаёт настоящим подкаталогом:
+    # иначе feature/x и feature-x делят один файл памяти.
+    Check 'ветка со слэшем — память в подкаталоге' {
+        & git -C $repo checkout -q -b feature/import
+        New-Item -ItemType Directory -Force -Path (Join-Path $work 'feature') | Out-Null
+        Set-Content -LiteralPath (Join-Path $work 'feature\import.md') -Encoding utf8 `
+            -Value '- Следующий шаг: разрезать разбор на части'
+        $problem = ExpectText $repo 'разрезать разбор на части'
+        & git -C $repo checkout -q $branch
+        return $problem
+    }
+
     Copy-Item -LiteralPath $repo -Destination $copy -Recurse -Force
     Check 'копия каталога вместе с .git — остановка' { ExpectText $copy 'не числит эту рабочую копию' }
     Check 'копия каталога вместе с .git — отчёт link.ps1 красный' { ExpectLinkReport $copy 1 'связь односторонняя' }
@@ -191,6 +223,22 @@ try {
 
     & git -C $repo worktree add -q $wt -b wt 2>$null
     Check 'worktree — работает как основная копия' { ExpectText $wt $repo }
+
+    # Ради этого память и адресуется веткой: у worktree база та же, а работа своя.
+    Check 'worktree — память своей ветки, а не основной копии' {
+        Set-Content -LiteralPath (Join-Path $work 'wt.md') -Encoding utf8 `
+            -Value '- Следующий шаг: работа отдельного worktree'
+        $problem = ExpectText $wt 'работа отдельного worktree'
+        if ($problem) { return $problem }
+        return ExpectNoText $wt 'дочитать формат позиции'
+    }
+
+    # Отсоединённый HEAD — не поломка, а состояние без адреса памяти: сессия обязана
+    # получить внятный ответ, а не молчание и не чужой файл.
+    Check 'отсоединённый HEAD — память не адресуется' {
+        & git -C $wt checkout -q --detach
+        return ExpectText $wt 'HEAD отсоединён'
+    }
 
     Move-Item -LiteralPath $base -Destination $moved
     Check 'база переименована — указатель разорван' { ExpectText $repo 'указатель разорван' }
