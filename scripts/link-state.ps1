@@ -34,6 +34,31 @@ function Get-KitWorkspace([string]$Dir) {
     return $workspace
 }
 
+# Рабочее дерево сессии: worktree остаётся собой и к основной копии не сводится.
+# Ключей пути в ките два, и они отвечают на разные вопросы: связь опознаёт проект,
+# и worktree для неё — та же копия; память опознаёт линию работы, а она у worktree
+# своя. Сведи их в один — либо worktree потеряет свою память, либо каждый временный
+# worktree потребует записи в базе.
+function Get-KitWorktree([string]$Dir) {
+    $top = Invoke-KitGit $Dir @('rev-parse', '--show-toplevel')
+    if (-not $top) { return $null }
+    return ConvertTo-KitPath $top
+}
+
+# Адрес памяти задачи — слаг полного пути рабочего дерева. Полного, а не имени
+# каталога: копии с одинаковым именем каталога в разных родителях — обычное дело,
+# и на имени каталога они делили бы файл. Нижний регистр потому, что NTFS его
+# не различает, и иначе один каталог давал бы два адреса.
+#
+# Слаг не взаимно однозначен: «a\b» и «a-b» дают одно имя. Ловит это не имя файла,
+# а строка «рабочая копия» внутри него — её сверяет тот, кто память подаёт.
+function Get-KitWorkMemoryPath([string]$BaseDir, [string]$Worktree) {
+    if (-not $BaseDir -or -not $Worktree) { return $null }
+    $slug = ([regex]::Replace($Worktree.ToLowerInvariant(), '[^\p{L}\p{Nd}]+', '-')).Trim('-')
+    if (-not $slug) { return $null }
+    return ConvertTo-KitPath (Join-Path $BaseDir ('work\' + $slug + '.md'))
+}
+
 function Get-KitBasePointer([string]$Dir) {
     $base = Invoke-KitGit $Dir @('config', '--local', '--get', 'agents-kit.base')
     if (-not $base) { return $null }

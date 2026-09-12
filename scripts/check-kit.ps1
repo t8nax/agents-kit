@@ -63,6 +63,23 @@ function ExpectText([string]$Dir, [string]$Needle) {
     return $null
 }
 
+# Адрес памяти берётся из того же текста, что видит сессия: он и есть контракт хука.
+function Get-HookMemoryPath([string]$Dir) {
+    $got = Invoke-Hook $Dir
+    if (-not $got) { return $null }
+    $m = [regex]::Match($got, '`([^`]+\\work\\[^`]+\.md)`')
+    if (-not $m.Success) { return $null }
+    return $m.Groups[1].Value
+}
+
+function Set-KitMemory([string]$Path, [string]$Worktree, [string]$Step) {
+    New-Item -ItemType Directory -Force -Path (Split-Path $Path -Parent) | Out-Null
+    Set-Content -LiteralPath $Path -Encoding utf8 -Value @(
+        '# Разбор накладной',
+        "рабочая копия: $Worktree",
+        '- Следующий шаг: ' + $Step)
+}
+
 function ExpectNoText([string]$Dir, [string]$Needle) {
     $got = Invoke-Hook $Dir
     if (-not $got) { return "хук промолчал — проверять нечего" }
@@ -172,35 +189,55 @@ try {
         return ExpectText $repo 'сверка остатков идёт ночным прогоном'
     }
 
-    # Память задачи адресуется веткой. Проверяется именно разделение: своя приезжает,
-    # соседняя — нет. Ошибка здесь стоит того, что сессия продолжит чужую работу.
-    $branch = ((& git -C $repo branch --show-current) | Select-Object -First 1).ToString().Trim()
-    $work = Join-Path $base 'work'
-    New-Item -ItemType Directory -Force -Path $work | Out-Null
+    # Память задачи адресуется рабочим деревом. Проверяется именно разделение: своя
+    # приезжает, соседняя — нет. Ошибка здесь стоит того, что сессия продолжит чужую работу.
+    #
+    # Адрес сверка не вычисляет заново, а берёт из вывода самого хука: посчитай она его
+    # той же формулой, проверка повторила бы реализацию и подтвердила бы её же ошибку.
+    New-Item -ItemType Directory -Force -Path (Join-Path $base 'work') | Out-Null
 
-    Check 'памяти нет — сессия получает её адрес' { ExpectText $repo "work\$branch.md" }
+    Check 'памяти нет — сессия получает её адрес' {
+        $script:memRepo = Get-HookMemoryPath $repo
+        if (-not $script:memRepo) { return 'хук не назвал адрес памяти' }
+        if ($script:memRepo -notmatch [regex]::Escape($base)) { return "адрес вне базы: $script:memRepo" }
+        return $null
+    }
 
-    Check 'память своей ветки — в контексте' {
-        Set-Content -LiteralPath (Join-Path $work "$branch.md") -Encoding utf8 `
-            -Value '# Разбор накладной', '- Следующий шаг: дочитать формат позиции'
+    Check 'память своей копии — в контексте' {
+        Set-KitMemory $script:memRepo $repo 'дочитать формат позиции'
         return ExpectText $repo 'дочитать формат позиции'
     }
 
-    Check 'память соседней ветки — не в контексте' {
-        Set-Content -LiteralPath (Join-Path $work 'neighbour.md') -Encoding utf8 `
-            -Value '- Следующий шаг: это работа соседней ветки'
-        return ExpectNoText $repo 'это работа соседней ветки'
+    # Файл без объявленной копии опознать нечем, и подавать его нельзя. Но лежит он
+    # по своему адресу, поэтому сессии называется не «разбирается человек», а строка,
+    # которой чинится: иначе она бросит собственную работу как чужую.
+    Check 'файл без объявленной копии — сессии названа строка, которой чинится' {
+        Set-Content -LiteralPath $script:memRepo -Encoding utf8 `
+            -Value '# Разбор накладной', '- Следующий шаг: файл без объявленной копии'
+        $problem = ExpectText $repo 'рабочая копия: '
+        if ($problem) { return $problem }
+        $problem = ExpectNoText $repo 'файл без объявленной копии'
+        Set-KitMemory $script:memRepo $repo 'дочитать формат позиции'
+        return $problem
     }
 
-    # Слэш в имени ветки — обычное дело, и путь он задаёт настоящим подкаталогом:
-    # иначе feature/x и feature-x делят один файл памяти.
-    Check 'ветка со слэшем — память в подкаталоге' {
-        & git -C $repo checkout -q -b feature/import
-        New-Item -ItemType Directory -Force -Path (Join-Path $work 'feature') | Out-Null
-        Set-Content -LiteralPath (Join-Path $work 'feature\import.md') -Encoding utf8 `
-            -Value '- Следующий шаг: разрезать разбор на части'
-        $problem = ExpectText $repo 'разрезать разбор на части'
-        & git -C $repo checkout -q $branch
+    # Ветка больше не адресует память, и это ровно то, что здесь проверяется:
+    # переименование ветки прежде осиротило бы файл молча.
+    Check 'ветка переименована — адрес прежний, память на месте' {
+        & git -C $repo branch -m razbor-nakladnoy
+        $after = Get-HookMemoryPath $repo
+        if ($after -ine $script:memRepo) { return "адрес уехал: $after" }
+        return ExpectText $repo 'дочитать формат позиции'
+    }
+
+    # Файл, объявивший чужую копию, — единственная защита от совпадения слагов
+    # и от файла, положенного в базу руками.
+    Check 'файл объявляет чужую копию — содержимое не подано' {
+        Set-KitMemory $script:memRepo 'D:\Projects\stranger' 'это работа чужой копии'
+        $problem = ExpectText $repo 'объявляет рабочую копию'
+        if ($problem) { return $problem }
+        $problem = ExpectNoText $repo 'это работа чужой копии'
+        Set-KitMemory $script:memRepo $repo 'дочитать формат позиции'
         return $problem
     }
 
@@ -222,23 +259,43 @@ try {
         return $null
     }
 
+    # Копия сделана с репозитория и стоит на ветке с тем же именем. Прежняя схема
+    # выдавала обеим один адрес, и работа одной затиралась молча.
+    Check 'вторая копия на ветке с тем же именем — адрес свой' {
+        $script:memCopy = Get-HookMemoryPath $copy
+        if (-not $script:memCopy) { return 'хук не назвал адрес памяти' }
+        if ($script:memCopy -ieq $script:memRepo) { return "адрес тот же, что у первой копии: $script:memCopy" }
+        return $null
+    }
+
+    Check 'память соседней копии — не в контексте' {
+        Set-KitMemory $script:memCopy $copy 'это работа соседней копии'
+        $problem = ExpectNoText $repo 'это работа соседней копии'
+        if ($problem) { return $problem }
+        return ExpectNoText $copy 'дочитать формат позиции'
+    }
+
     & git -C $repo worktree add -q $wt -b wt 2>$null
     Check 'worktree — работает как основная копия' { ExpectText $wt $repo }
 
-    # Ради этого память и адресуется веткой: у worktree база та же, а работа своя.
-    Check 'worktree — память своей ветки, а не основной копии' {
-        Set-Content -LiteralPath (Join-Path $work 'wt.md') -Encoding utf8 `
-            -Value '- Следующий шаг: работа отдельного worktree'
+    # Ради этого память и адресуется рабочим деревом: у worktree база та же, а работа своя.
+    Check 'worktree — память своя, а не основной копии' {
+        $script:memWt = Get-HookMemoryPath $wt
+        if (-not $script:memWt) { return 'хук не назвал адрес памяти' }
+        if ($script:memWt -ieq $script:memRepo) { return 'адрес тот же, что у основной копии' }
+        Set-KitMemory $script:memWt $wt 'работа отдельного worktree'
         $problem = ExpectText $wt 'работа отдельного worktree'
         if ($problem) { return $problem }
         return ExpectNoText $wt 'дочитать формат позиции'
     }
 
-    # Отсоединённый HEAD — не поломка, а состояние без адреса памяти: сессия обязана
-    # получить внятный ответ, а не молчание и не чужой файл.
-    Check 'отсоединённый HEAD — память не адресуется' {
+    # Отсоединённый HEAD прежде оставлял работу вовсе без памяти: адресом была ветка,
+    # а её нет. Рабочее дерево на месте, значит и память на месте.
+    Check 'отсоединённый HEAD — адрес прежний, память на месте' {
         & git -C $wt checkout -q --detach
-        return ExpectText $wt 'HEAD отсоединён'
+        $after = Get-HookMemoryPath $wt
+        if ($after -ine $script:memWt) { return "адрес уехал: $after" }
+        return ExpectText $wt 'работа отдельного worktree'
     }
 
     Move-Item -LiteralPath $base -Destination $moved
