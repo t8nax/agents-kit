@@ -77,7 +77,8 @@ function Set-KitMemory([string]$Path, [string]$Worktree, [string]$Step) {
     Set-Content -LiteralPath $Path -Encoding utf8 -Value @(
         '# Разбор накладной',
         "рабочая копия: $Worktree",
-        '- Следующий шаг: ' + $Step)
+        '## Шаги',
+        '- [ ] ' + $Step)
 }
 
 function ExpectNoText([string]$Dir, [string]$Needle) {
@@ -232,7 +233,7 @@ try {
     # которой чинится: иначе она бросит собственную работу как чужую.
     Check 'файл без объявленной копии — сессии названа строка, которой чинится' {
         Set-Content -LiteralPath $script:memRepo -Encoding utf8 `
-            -Value '# Разбор накладной', '- Следующий шаг: файл без объявленной копии'
+            -Value '# Разбор накладной', '## Шаги', '- [ ] файл без объявленной копии'
         $problem = ExpectText $repo 'рабочая копия: '
         if ($problem) { return $problem }
         $problem = ExpectNoText $repo 'файл без объявленной копии'

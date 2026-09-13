@@ -245,7 +245,7 @@ function Get-KitOwnMemoryFindings([string]$Path, [string]$Label, [string]$Worktr
         New-KitFinding 'FAIL' $Label "нет строки «рабочая копия: $Worktree» — без неё хук память не подаёт"
     }
 
-    foreach ($field in 'ветка', 'Критерий закрытия', 'Следующий шаг', 'Человеку') {
+    foreach ($field in 'ветка', 'Критерий закрытия', 'Человеку') {
         if ($text -notmatch "(?im)^\s*(-\s*)?$([regex]::Escape($field))\s*:") {
             New-KitFinding 'WARN' $Label "нет строки «${field}:» из шаблона памяти"
         }
