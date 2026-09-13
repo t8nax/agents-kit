@@ -2,8 +2,9 @@
 # Дот-сорсится хуками; сами они только переводят находки в свой вывод. Почему
 # сверка не раздваивается — CLAUDE.md.
 #
-# Находка — { severity; file; message }. FAIL — база разошлась с раскладкой,
-# WARN — повод перечитать и решить. Правила раскладки, в том числе числа потолков,
+# Находка — { severity; file; message; kind }. FAIL — база разошлась с раскладкой,
+# WARN — повод перечитать и решить; kind = secret отличает подозрение на секрет,
+# которое гейт коммита несёт человеку. Правила раскладки, в том числе числа потолков,
 # живут в reference\base-layout.md; здесь их нет ни одним числом.
 #
 # Две точки входа на два момента:
@@ -12,8 +13,8 @@
 
 . (Join-Path $PSScriptRoot 'link-state.ps1')
 
-function New-KitFinding([string]$Severity, [string]$File, [string]$Message) {
-    return [pscustomobject]@{ severity = $Severity; file = $File; message = $Message }
+function New-KitFinding([string]$Severity, [string]$File, [string]$Message, [string]$Kind = '') {
+    return [pscustomobject]@{ severity = $Severity; file = $File; message = $Message; kind = $Kind }
 }
 
 # Файл базы, как его видит сессия. Сверка считает строки по этому же тексту: считай
@@ -94,7 +95,7 @@ function Find-KitSecrets([string]$Path, [string]$Label) {
     for ($i = 0; $i -lt $lines.Count; $i++) {
         foreach ($pattern in $script:KitSecretPatterns) {
             if ($lines[$i] -match $pattern) {
-                New-KitFinding 'WARN' "${Label}:$($i + 1)" 'похоже на секрет — значение живёт там, где его читает код, а в базе только в local/'
+                New-KitFinding 'WARN' "${Label}:$($i + 1)" 'похоже на секрет — значение живёт там, где его читает код, а в базе только в local/' 'secret'
                 break
             }
         }

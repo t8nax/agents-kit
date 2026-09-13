@@ -1,6 +1,17 @@
 {
-  "description": "agents-kit: подаёт сессии базу знаний её проекта и инварианты кита",
+  "description": "agents-kit: подаёт сессии базу знаний её проекта и инварианты кита, сверяет коммит в базу",
   "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "pwsh -NoProfile -File \"${CLAUDE_PLUGIN_ROOT}/scripts/commit-gate.ps1\""
+          }
+        ]
+      }
+    ],
     "SessionStart": [
       {
         "hooks": [
