@@ -9,7 +9,7 @@
 #
 # Две точки входа на два момента:
 #   Get-KitBaseFindings    база целиком — то, что расходится само, без всякого коммита
-#   Get-KitCommitFindings  только файлы коммита — чужой перерасход не останавливает свой коммит
+#   Get-KitCommitFindings  файлы коммита и local/ — то, что уедет в историю этим коммитом
 
 . (Join-Path $PSScriptRoot 'link-state.ps1')
 
@@ -17,9 +17,12 @@ function New-KitFinding([string]$Severity, [string]$File, [string]$Message, [str
     return [pscustomobject]@{ severity = $Severity; file = $File; message = $Message; kind = $Kind }
 }
 
-# Файл базы, как его видит сессия. Сверка считает строки по этому же тексту: считай
-# она по сырому файлу, закомментированный пример из шаблона съедал бы потолок, которого
-# сессия не видит. Нечитаемый файл — пустая строка, а не исключение.
+# Файл базы, как его видит сессия: и подача хука, и потолок сверки берут этот текст.
+#
+# Комментарий до сессии не доходит — иначе закомментированный пример из шаблона приехал
+# бы в контекст как факт проекта. Нечитаемый файл — пустая строка, а не исключение:
+# уронив подачу целиком, хук оставил бы сессию без базы, а молчание в ветке Linked
+# неотличимо от «репозиторий не под китом».
 function Read-KitMarkdown([string]$Path) {
     try { $text = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop } catch { return '' }
     if (-not $text) { return '' }
@@ -38,10 +41,8 @@ function Get-KitDeclaredWorktree([string]$Text) {
     return ConvertTo-KitPath $m.Groups[1].Value
 }
 
-# Потолки читаются из раскладки: числа нужны и сессии, когда она пишет, и сверке,
-# и второй их копии не заводится. Поэтому ячейка «Потолок» пишется строго, а разбор,
-# который не сошёлся, не молчит: файл без разобранного потолка даёт FAIL, а не
-# проходит непроверенным.
+# Потолки читаются из раскладки; почему — CLAUDE.md. Разбор, который не сошёлся,
+# не молчит: файл без разобранного потолка даёт FAIL, а не проходит непроверенным.
 function Get-KitCeilings {
     $result = @{ files = @{}; memory = $null }
     $path = Join-Path $PSScriptRoot '..\reference\base-layout.md'
@@ -60,8 +61,8 @@ function Get-KitCeilings {
     return $result
 }
 
-# Файлы каркаса — это и есть список известных файлов корня. Второго списка нет:
-# он разошёлся бы с шаблоном молча.
+# Известные файлы корня берутся из каркаса, а не перечисляются здесь: новый файл
+# шаблона становится известным сверке без её правки.
 function Get-KitTemplateNames {
     $template = Join-Path $PSScriptRoot '..\template\base'
     try { return @(Get-ChildItem -LiteralPath $template -File -Force -ErrorAction Stop | ForEach-Object { $_.Name }) }
@@ -213,15 +214,19 @@ function Get-KitRootFindings([string]$Base, $Ceilings) {
     }
 }
 
-function Get-KitOwnMemoryFindings([string]$Path, [string]$Label, [string]$Worktree, $Ceilings) {
+# Опознание своей памяти на старте сессии называет её подача в session-start.ps1,
+# и сверка его там не повторяет (-SkipIdentity). В коммите его назвать больше некому.
+function Get-KitOwnMemoryFindings([string]$Path, [string]$Label, [string]$Worktree, $Ceilings, [switch]$SkipIdentity) {
     $text = Read-KitMarkdown $Path
     $declared = Get-KitDeclaredWorktree $text
-    if (-not $declared) {
-        New-KitFinding 'FAIL' $Label "нет строки «рабочая копия: $Worktree» — без неё хук память не подаёт"
-    }
-    elseif ($declared -ine $Worktree) {
-        New-KitFinding 'FAIL' $Label "объявляет рабочую копию «$declared», а лежит по адресу «$Worktree» — не своя, решает человек"
+    if ($declared -and $declared -ine $Worktree) {
+        if (-not $SkipIdentity) {
+            New-KitFinding 'FAIL' $Label "объявляет рабочую копию «$declared», а лежит по адресу «$Worktree» — не своя, решает человек"
+        }
         return
+    }
+    if (-not $declared -and -not $SkipIdentity) {
+        New-KitFinding 'FAIL' $Label "нет строки «рабочая копия: $Worktree» — без неё хук память не подаёт"
     }
 
     foreach ($field in 'ветка', 'Критерий закрытия', 'Следующий шаг', 'Человеку') {
@@ -269,7 +274,7 @@ function Get-KitWorkFindings([string]$Base, [string]$Worktree, $Ceilings) {
         if ($item.Extension -ine '.md') { New-KitFinding 'WARN' $label 'не .md в work/ — work/ держит только память задач'; continue }
 
         $path = ConvertTo-KitPath $item.FullName
-        if ($own -and $path -ieq $own) { Get-KitOwnMemoryFindings $path $label $Worktree $Ceilings }
+        if ($own -and $path -ieq $own) { Get-KitOwnMemoryFindings $path $label $Worktree $Ceilings -SkipIdentity }
         else { Get-KitForeignMemoryFindings $Base $path $label }
     }
 }
