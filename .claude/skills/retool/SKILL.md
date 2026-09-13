@@ -16,6 +16,7 @@ description: "Правка механизма кита: добавить или 
 | `scripts/session-start.ps1` | что видит сессия на старте |
 | `scripts/link.ps1` | как связывают копию с базой и как показывают связь |
 | `scripts/base-init.ps1` | с чего начинается новая база |
+| `scripts/base-check.ps1` | что в базе не так |
 | `scripts/check-kit.ps1` | чем кит проверяется |
 | `reference/invariants.md` | перечень того, что действует в каждой сессии под китом, — без причин |
 | `reference/base-layout.md` | как ведут файлы базы |

@@ -15,18 +15,13 @@ function Emit([string]$Text) {
     $payload | ConvertTo-Json -Depth 5 -Compress
 }
 
-# Файл базы, как его видит сессия. Нечитаемый файл — пустая строка, а не исключение:
-# уронив подачу целиком, хук оставил бы сессию без базы, а молчание в ветке Linked
-# неотличимо от «репозиторий не под китом».
+# Файл базы, как его видит сессия, читает Read-KitMarkdown из base-check.ps1: сверка
+# считает потолки по тому же тексту. Нечитаемый файл там — пустая строка, а не
+# исключение: уронив подачу целиком, хук оставил бы сессию без базы, а молчание в ветке
+# Linked неотличимо от «репозиторий не под китом».
 #
-# Комментарий до сессии не доходит, и режется он здесь один раз на все подачи. Иначе
-# закомментированный пример из шаблона приезжает в контекст как факт проекта, и отличить
-# его от факта нечем.
-function Read-KitMarkdown([string]$Path) {
-    try { $text = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop } catch { return '' }
-    if (-not $text) { return '' }
-    return ([regex]::Replace($text, '(?s)<!--.*?-->', '')).Trim()
-}
+# Комментарий до сессии не доходит. Иначе закомментированный пример из шаблона приезжает
+# в контекст как факт проекта, и отличить его от факта нечем.
 
 # Знание базы подаётся содержимым, а не путём: его читает каждая сессия, а не только
 # та, что пишет. Списка файлов здесь нет намеренно — он стал бы вторыми правилами
@@ -80,9 +75,7 @@ function Read-KitWorkMemory([string]$BaseDir, [string]$Dir) {
     # Файл объявляет свою рабочую копию, и она сверяется. Слаг пути не взаимно однозначен,
     # да и файл могли положить сюда руками: без сверки сессия продолжила бы чужую работу,
     # считая её своей. Неопознанная память не подаётся — подать её опаснее, чем не подать.
-    $declared = $null
-    $match = [regex]::Match($text, '(?im)^\s*рабочая\s+копия\s*:\s*(.+?)\s*$')
-    if ($match.Success) { $declared = ConvertTo-KitPath $match.Groups[1].Value }
+    $declared = Get-KitDeclaredWorktree $text
 
     if (-not $declared) {
         return @"
@@ -116,8 +109,26 @@ $text
 "@
 }
 
+# Сверка подаётся находками, а не отчётом: чистая база не стоит сессии ни строки.
+# Правила сверки — base-check.ps1; здесь только перевод. Упала сама сверка — подача
+# базы остаётся: база без сверки лучше, чем сессия без базы.
+function Read-KitBaseFindings([string]$BaseDir, [string]$Dir) {
+    try { $findings = @(Get-KitBaseFindings $BaseDir (Get-KitWorktree $Dir)) } catch { return '' }
+    if (-not $findings.Count) { return '' }
+    $lines = $findings | ForEach-Object { "- **$($_.severity)** ``$($_.file)`` — $($_.message)" }
+    return @"
+
+## Сверка базы
+
+База разошлась с раскладкой. **FAIL** — чинить до записи знания, **WARN** — перечитать и решить. Помеченное «решает человек» не трогать, а показать человеку.
+
+$($lines -join "`n")
+"@
+}
+
 try {
     . (Join-Path $PSScriptRoot 'link-state.ps1')
+    . (Join-Path $PSScriptRoot 'base-check.ps1')
 
     $raw = [Console]::In.ReadToEnd()
     $cwd = $null
@@ -173,6 +184,7 @@ try {
                 $invariants = (Get-Content -LiteralPath $invPath -Raw).Trim()
             }
             $knowledge = Read-KitBaseKnowledge $state.base
+            $findings = Read-KitBaseFindings $state.base $cwd
             # Память задачи подаётся последней: знание базы верно всегда, а это — то,
             # с чего сессия продолжает работу прямо сейчас.
             $work = Read-KitWorkMemory $state.base $cwd
@@ -193,6 +205,7 @@ try {
 
 $invariants
 $knowledge
+$findings
 $work
 "@
         }
