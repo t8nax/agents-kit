@@ -16,9 +16,7 @@ function Emit([string]$Text) {
 }
 
 # Знание базы подаётся содержимым, а не путём: его читает каждая сессия, а не только
-# та, что пишет. Подаются три названных файла, а не корень базы; почему — CLAUDE.md.
-$script:KitServedFiles = @('product.md', 'boundaries.md', 'decisions.md')
-
+# та, что пишет. Какие файлы подаются, названо в base-check.ps1.
 function Read-KitBaseKnowledge([string]$BaseDir) {
     $blocks = @()
     foreach ($name in $script:KitServedFiles) {

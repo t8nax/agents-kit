@@ -13,6 +13,11 @@
 
 . (Join-Path $PSScriptRoot 'link-state.ps1')
 
+# Файлы базы, которые хук подаёт сессии содержимым, — три названных, а не корень базы;
+# почему — CLAUDE.md. Потолок файла знания — цена подачи, поэтому среди файлов корня
+# он проверяется у них и только у них; у памяти задачи потолок свой.
+$script:KitServedFiles = @('product.md', 'boundaries.md', 'decisions.md')
+
 function New-KitFinding([string]$Severity, [string]$File, [string]$Message, [string]$Kind = '') {
     return [pscustomobject]@{ severity = $Severity; file = $File; message = $Message; kind = $Kind }
 }
@@ -196,16 +201,16 @@ function Get-KitKnowledgeCeilingFindings([string]$Path, [string]$Label, $Ceiling
     }
 }
 
-# Файлы корня: каркас на месте и не перерос потолки. О файлах сверх каркаса сверка молчит.
+# Файлы корня: каркас на месте, подаваемые не переросли потолки. О файлах сверх каркаса
+# сверка молчит.
 function Get-KitRootFindings([string]$Base, $Ceilings) {
-    $template = Get-KitTemplateNames
-    foreach ($name in $template) {
+    foreach ($name in Get-KitTemplateNames) {
         if (-not (Test-Path -LiteralPath (Join-Path $Base $name) -PathType Leaf)) {
             New-KitFinding 'WARN' $name 'файла из каркаса нет — довезёт повторный base-init.ps1'
         }
     }
     foreach ($file in @(Get-ChildItem -LiteralPath $Base -File -ErrorAction SilentlyContinue | Where-Object { $_.Extension -ieq '.md' })) {
-        if ($template -contains $file.Name) {
+        if ($script:KitServedFiles -contains $file.Name) {
             Get-KitKnowledgeCeilingFindings $file.FullName $file.Name $Ceilings
         }
     }
@@ -297,7 +302,6 @@ function Get-KitBaseFindings([string]$Base, [string]$Worktree) {
 function Get-KitCommitFindings([string]$Base, [string]$Worktree, [string[]]$Files) {
     $Base = ConvertTo-KitPath $Base
     $ceilings = Get-KitCeilings
-    $template = Get-KitTemplateNames
     $own = Get-KitWorkMemoryPath $Base $Worktree
 
     Get-KitGitFindings $Base
@@ -316,7 +320,7 @@ function Get-KitCommitFindings([string]$Base, [string]$Worktree, [string[]]$File
             continue
         }
         if ($rel -notmatch '\\' -and $rel -match '\.md$') {
-            if ($template -contains $rel) { Get-KitKnowledgeCeilingFindings $path $rel $ceilings }
+            if ($script:KitServedFiles -contains $rel) { Get-KitKnowledgeCeilingFindings $path $rel $ceilings }
         }
         elseif ($rel -match '^work\\[^\\]+\.md$') {
             if ($own -and $path -ieq $own) { Get-KitOwnMemoryFindings $path $rel $Worktree $ceilings }

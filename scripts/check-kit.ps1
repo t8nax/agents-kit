@@ -143,7 +143,7 @@ try {
     Check 'база заведена — каркас, репозиторий и коммит' {
         $r = Invoke-BaseInit $base
         if ($r.code -ne 0) { return "код возврата $($r.code): $($r.text)" }
-        foreach ($f in 'product.md', 'boundaries.md', 'decisions.md', '.gitignore') {
+        foreach ($f in 'product.md', 'boundaries.md', 'decisions.md', 'flow.md', '.gitignore') {
             if (-not (Test-Path -LiteralPath (Join-Path $base $f) -PathType Leaf)) { return "нет файла $f" }
         }
         if (-not (Test-Path -LiteralPath (Join-Path $base '.git') -PathType Container)) { return 'нет репозитория базы' }
@@ -186,6 +186,16 @@ try {
             -Value '# Лишнее', '', 'строка из файла вне подачи'
         $problem = ExpectNoText $repo 'строка из файла вне подачи'
         Remove-Item -LiteralPath (Join-Path $base 'extra.md') -Force
+        return $problem
+    }
+
+    # Флоу нужен только /drive, и в каждую сессию он не приезжает.
+    Check 'флоу базы — в контекст не попадает' {
+        $flow = Join-Path $base 'flow.md'
+        $saved = Get-Content -LiteralPath $flow -Raw
+        Set-Content -LiteralPath $flow -Encoding utf8 -Value '# Флоу', '', '## 1. Метка флоу вне подачи'
+        $problem = ExpectNoText $repo 'Метка флоу вне подачи'
+        Set-Content -LiteralPath $flow -Encoding utf8 -Value $saved -NoNewline
         return $problem
     }
 
