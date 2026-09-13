@@ -4,8 +4,9 @@
 #
 # Находка — { severity; file; message; kind }. FAIL — база разошлась с раскладкой,
 # WARN — повод перечитать и решить; kind = secret отличает подозрение на секрет,
-# которое гейт коммита несёт человеку. Правила раскладки, в том числе числа потолков,
-# живут в reference\base-layout.md; здесь их нет ни одним числом.
+# которое гейт коммита несёт человеку. Сверяется и флоу — запись его шагов. Правила
+# раскладки, в том числе числа потолков и перечень ключей шага, живут в
+# reference\base-layout.md; здесь нет ни чисел, ни перечня.
 #
 # Две точки входа на два момента:
 #   Get-KitBaseFindings    база целиком — то, что расходится само, без всякого коммита
@@ -46,12 +47,25 @@ function Get-KitDeclaredWorktree([string]$Text) {
     return ConvertTo-KitPath $m.Groups[1].Value
 }
 
-# Потолки читаются из раскладки; почему — CLAUDE.md. Разбор, который не сошёлся,
-# не молчит: файл без разобранного потолка даёт FAIL, а не проходит непроверенным.
-function Get-KitCeilings {
-    $result = @{ files = @{}; memory = $null }
+# Потолки и ключи шага флоу читаются из раскладки; почему — CLAUDE.md. Разбор, который
+# не сошёлся, не молчит: файл без разобранного правила даёт FAIL, а не проходит непроверенным.
+function Get-KitLayoutRules {
+    $result = @{ files = @{}; memory = $null; flowKeys = [ordered]@{}; executors = @() }
     $path = Join-Path $PSScriptRoot '..\reference\base-layout.md'
     try { $text = Get-Content -LiteralPath $path -Raw -ErrorAction Stop } catch { return $result }
+
+    # Таблица ключей шага — единственная после заголовка флоу с колонкой «да/нет».
+    $flowAt = [regex]::Match($text, '(?m)^## Флоу проекта\s*$')
+    if ($flowAt.Success) {
+        $flowText = $text.Substring($flowAt.Index)
+        foreach ($row in [regex]::Matches($flowText, '(?m)^\|\s*`([^`]+)`\s*\|\s*(.*?)\s*\|\s*(да|нет)\s*\|\s*$')) {
+            $key = $row.Groups[1].Value
+            $result.flowKeys[$key] = ($row.Groups[3].Value -eq 'да')
+            if ($key -eq 'исполнитель') {
+                $result.executors = @([regex]::Matches($row.Groups[2].Value, '`([^`<>]+)`') | ForEach-Object { $_.Groups[1].Value })
+            }
+        }
+    }
 
     foreach ($row in [regex]::Matches($text, '(?m)^\|\s*`([^`]+\.md)`\s*\|.*\|\s*([^|]*?)\s*\|\s*$')) {
         $cell = [regex]::Match($row.Groups[2].Value, '^(\d+) строк(?:, раздел — (\d+))?$')
@@ -281,14 +295,99 @@ function Get-KitWorkFindings([string]$Base, [string]$Worktree, $Ceilings) {
     }
 }
 
+# Субагенты, которых сверке видно: рабочая копия и пользователь. Субагенты плагинов
+# сверке не видны, поэтому ненайденный исполнитель — WARN, а не FAIL.
+function Get-KitVisibleAgents([string]$Worktree) {
+    $names = @{}
+    $dirs = @((Join-Path $HOME '.claude\agents'))
+    if ($Worktree) { $dirs += Join-Path $Worktree '.claude\agents' }
+    foreach ($dir in $dirs) {
+        foreach ($file in @(Get-ChildItem -LiteralPath $dir -Filter '*.md' -File -ErrorAction SilentlyContinue)) {
+            try { $head = Get-Content -LiteralPath $file.FullName -TotalCount 40 -ErrorAction Stop } catch { continue }
+            foreach ($line in $head) {
+                if ($line -match '^\s*name\s*:\s*["'']?([^"''#]+?)["'']?\s*$') { $names[$Matches[1]] = $true; break }
+            }
+        }
+    }
+    return $names
+}
+
+# Флоу — шаги, которые /drive проходит по порядку. Сверка называет то, что не даст пройти
+# шаг однозначно: нет обязательного ключа, чужой ключ, невидимый исполнитель, сбитый
+# порядок. Описание шага и длину флоу она не проверяет. Файла нет — это уже назвала
+# сверка каркаса.
+function Get-KitFlowFindings([string]$Base, [string]$Worktree, $Rules) {
+    $path = Join-Path $Base 'flow.md'
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return }
+    if (-not $Rules.flowKeys.Contains('исполнитель') -or -not $Rules.executors.Count) {
+        New-KitFinding 'FAIL' 'flow.md' 'перечень ключей шага не разобран — таблица в разделе «Флоу проекта» раскладки'
+        return
+    }
+
+    $steps = @()
+    $current = $null
+    $inKeys = $false
+    foreach ($line in ((Read-KitMarkdown $path) -split '\r?\n')) {
+        $heading = [regex]::Match($line, '^##\s+(\d+)\.\s+(.+?)\s*$')
+        if ($heading.Success) {
+            $current = @{ number = [int]$heading.Groups[1].Value; keys = [ordered]@{} }
+            $steps += $current
+            $inKeys = $true
+            continue
+        }
+        if (-not $current -or -not $inKeys) { continue }
+        if (-not $line.Trim()) {
+            if ($current.keys.Count) { $inKeys = $false }
+            continue
+        }
+        $pair = [regex]::Match($line, '^([^\s:][^:]*?)\s*:\s*(.*?)\s*$')
+        if (-not $pair.Success) { $inKeys = $false; continue }
+        $current.keys[$pair.Groups[1].Value] = $pair.Groups[2].Value
+    }
+
+    if (-not $steps.Count) {
+        New-KitFinding 'WARN' 'flow.md' 'флоу пуст — /drive не начнёт работу, пока он не написан с человеком'
+        return
+    }
+
+    $agents = $null
+    $previous = 0
+    foreach ($step in $steps) {
+        $n = $step.number
+        if ($n -ne $previous + 1) {
+            New-KitFinding 'WARN' 'flow.md' "шаг $n после шага $previous — порядок исполнения — порядок номеров"
+        }
+        $previous = $n
+
+        foreach ($key in $step.keys.Keys) {
+            if (-not $Rules.flowKeys.Contains($key)) {
+                New-KitFinding 'FAIL' 'flow.md' "шаг ${n}: ключ «$key» вне перечня — своих ключей не заводят"
+            }
+        }
+        foreach ($key in $Rules.flowKeys.Keys) {
+            if (-not $Rules.flowKeys[$key]) { continue }
+            if (-not $step.keys.Contains($key)) { New-KitFinding 'FAIL' 'flow.md' "шаг ${n}: нет ключа «$key»" }
+            elseif (-not $step.keys[$key]) { New-KitFinding 'FAIL' 'flow.md' "шаг ${n}: ключ «$key» пуст" }
+        }
+
+        $executor = $step.keys['исполнитель']
+        if (-not $executor -or $Rules.executors -contains $executor) { continue }
+        if ($null -eq $agents) { $agents = Get-KitVisibleAgents $Worktree }
+        if (-not $agents.ContainsKey($executor)) {
+            New-KitFinding 'WARN' 'flow.md' "шаг ${n}: субагента «$executor» не видно — может прийти из плагина; нет его — шаг встанет строкой человеку"
+        }
+    }
+}
+
 function Get-KitBaseFindings([string]$Base, [string]$Worktree) {
     $Base = ConvertTo-KitPath $Base
-    $ceilings = Get-KitCeilings
+    $rules = Get-KitLayoutRules
 
     Get-KitLinkFindings $Base
     Get-KitGitFindings $Base
-    Get-KitRootFindings $Base $ceilings
-    Get-KitWorkFindings $Base $Worktree $ceilings
+    Get-KitRootFindings $Base $rules
+    Get-KitFlowFindings $Base $Worktree $rules
+    Get-KitWorkFindings $Base $Worktree $rules
 
     # Незакоммиченное входит: это то, что вот-вот уедет в историю.
     foreach ($rel in @(& git -C $Base ls-files --cached --others --exclude-standard 2>$null | Where-Object { $_ })) {
@@ -301,7 +400,7 @@ function Get-KitBaseFindings([string]$Base, [string]$Worktree) {
 # памяти можно всегда, и чинить в нём уже нечего.
 function Get-KitCommitFindings([string]$Base, [string]$Worktree, [string[]]$Files) {
     $Base = ConvertTo-KitPath $Base
-    $ceilings = Get-KitCeilings
+    $rules = Get-KitLayoutRules
     $own = Get-KitWorkMemoryPath $Base $Worktree
 
     Get-KitGitFindings $Base
@@ -320,10 +419,11 @@ function Get-KitCommitFindings([string]$Base, [string]$Worktree, [string[]]$File
             continue
         }
         if ($rel -notmatch '\\' -and $rel -match '\.md$') {
-            if ($script:KitServedFiles -contains $rel) { Get-KitKnowledgeCeilingFindings $path $rel $ceilings }
+            if ($script:KitServedFiles -contains $rel) { Get-KitKnowledgeCeilingFindings $path $rel $rules }
+            elseif ($rel -ieq 'flow.md') { Get-KitFlowFindings $Base $Worktree $rules }
         }
         elseif ($rel -match '^work\\[^\\]+\.md$') {
-            if ($own -and $path -ieq $own) { Get-KitOwnMemoryFindings $path $rel $Worktree $ceilings }
+            if ($own -and $path -ieq $own) { Get-KitOwnMemoryFindings $path $rel $Worktree $rules }
             else { New-KitFinding 'FAIL' $rel 'память другой рабочей копии в коммите — её коммитит сессия той копии; не своя, решает человек' }
         }
         Find-KitSecrets $path $rel
