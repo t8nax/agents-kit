@@ -144,7 +144,7 @@ try {
     Check 'база заведена — каркас, репозиторий и коммит' {
         $r = Invoke-BaseInit $base
         if ($r.code -ne 0) { return "код возврата $($r.code): $($r.text)" }
-        foreach ($f in 'product.md', 'boundaries.md', 'decisions.md', 'flow.md', '.gitignore') {
+        foreach ($f in 'product.md', 'boundaries.md', 'decisions.md', 'flow.md', 'backlog.md', '.gitignore') {
             if (-not (Test-Path -LiteralPath (Join-Path $base $f) -PathType Leaf)) { return "нет файла $f" }
         }
         if (-not (Test-Path -LiteralPath (Join-Path $base '.git') -PathType Container)) { return 'нет репозитория базы' }
