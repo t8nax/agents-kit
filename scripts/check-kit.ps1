@@ -180,6 +180,15 @@ try {
         return ExpectText $repo 'сверка остатков идёт ночным прогоном'
     }
 
+    # Подаются три названных файла, а не корень базы: лишний .md до сессии не доходит.
+    Check 'файл в корне базы сверх трёх — в контекст не попадает' {
+        Set-Content -LiteralPath (Join-Path $base 'extra.md') -Encoding utf8 `
+            -Value '# Лишнее', '', 'строка из файла вне подачи'
+        $problem = ExpectNoText $repo 'строка из файла вне подачи'
+        Remove-Item -LiteralPath (Join-Path $base 'extra.md') -Force
+        return $problem
+    }
+
     # Закомментированный пример из шаблона — тот случай, ради которого хук режет комментарии.
     Check 'пример из HTML-комментария в контекст не попадает' { ExpectNoText $repo 'EF Core' }
 

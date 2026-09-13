@@ -196,7 +196,7 @@ function Get-KitKnowledgeCeilingFindings([string]$Path, [string]$Label, $Ceiling
     }
 }
 
-# Файлы корня: каркас на месте, лишний .md не приезжает в каждую сессию незамеченным.
+# Файлы корня: каркас на месте и не перерос потолки. О файлах сверх каркаса сверка молчит.
 function Get-KitRootFindings([string]$Base, $Ceilings) {
     $template = Get-KitTemplateNames
     foreach ($name in $template) {
@@ -207,9 +207,6 @@ function Get-KitRootFindings([string]$Base, $Ceilings) {
     foreach ($file in @(Get-ChildItem -LiteralPath $Base -File -ErrorAction SilentlyContinue | Where-Object { $_.Extension -ieq '.md' })) {
         if ($template -contains $file.Name) {
             Get-KitKnowledgeCeilingFindings $file.FullName $file.Name $Ceilings
-        }
-        else {
-            New-KitFinding 'WARN' $file.Name 'файл сверх каркаса — каждый .md в корне приезжает в каждую сессию целиком'
         }
     }
 }
@@ -320,7 +317,6 @@ function Get-KitCommitFindings([string]$Base, [string]$Worktree, [string[]]$File
         }
         if ($rel -notmatch '\\' -and $rel -match '\.md$') {
             if ($template -contains $rel) { Get-KitKnowledgeCeilingFindings $path $rel $ceilings }
-            else { New-KitFinding 'WARN' $rel 'файл сверх каркаса — каждый .md в корне приезжает в каждую сессию целиком' }
         }
         elseif ($rel -match '^work\\[^\\]+\.md$') {
             if ($own -and $path -ieq $own) { Get-KitOwnMemoryFindings $path $rel $Worktree $ceilings }

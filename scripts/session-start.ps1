@@ -16,21 +16,15 @@ function Emit([string]$Text) {
 }
 
 # Знание базы подаётся содержимым, а не путём: его читает каждая сессия, а не только
-# та, что пишет. Списка файлов здесь нет намеренно — он стал бы вторыми правилами
-# раскладки рядом с base-layout.md и разъехался бы с ней молча; берётся то, что лежит
-# в корне базы. Подкаталоги не трогаются: в корне и лежит обязательное к прочтению.
-function Read-KitBaseKnowledge([string]$BaseDir) {
-    try {
-        $files = @(Get-ChildItem -LiteralPath $BaseDir -File -ErrorAction Stop |
-            Where-Object { $_.Extension -ieq '.md' } | Sort-Object Name)
-    }
-    catch { return '' }
+# та, что пишет. Подаются три названных файла, а не корень базы; почему — CLAUDE.md.
+$script:KitServedFiles = @('product.md', 'boundaries.md', 'decisions.md')
 
+function Read-KitBaseKnowledge([string]$BaseDir) {
     $blocks = @()
-    foreach ($file in $files) {
-        $text = Read-KitMarkdown $file.FullName
+    foreach ($name in $script:KitServedFiles) {
+        $text = Read-KitMarkdown (Join-Path $BaseDir $name)
         if (-not $text) { continue }
-        $blocks += "**$($file.Name)**`n`n$text"
+        $blocks += "**$name**`n`n$text"
     }
     if (-not $blocks) { return '' }
 
@@ -38,7 +32,7 @@ function Read-KitBaseKnowledge([string]$BaseDir) {
 
 ---
 
-Ниже — файлы базы целиком. Это знание проекта, и в этой сессии оно действует. Правила ведения этих файлов — по пути раскладки выше.
+Ниже — файлы знания базы целиком. Это знание проекта, и в этой сессии оно действует. Правила ведения этих файлов — по пути раскладки выше.
 
 $($blocks -join "`n`n")
 "@
