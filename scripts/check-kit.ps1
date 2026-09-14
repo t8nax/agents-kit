@@ -144,7 +144,7 @@ try {
     Check 'база заведена — каркас, репозиторий и коммит' {
         $r = Invoke-BaseInit $base
         if ($r.code -ne 0) { return "код возврата $($r.code): $($r.text)" }
-        foreach ($f in 'product.md', 'boundaries.md', 'decisions.md', 'flow.md', 'backlog.md', '.gitignore') {
+        foreach ($f in 'product.md', 'boundaries.md', 'flow.md', 'backlog.md', '.gitignore') {
             if (-not (Test-Path -LiteralPath (Join-Path $base $f) -PathType Leaf)) { return "нет файла $f" }
         }
         if (-not (Test-Path -LiteralPath (Join-Path $base '.git') -PathType Container)) { return 'нет репозитория базы' }
@@ -158,11 +158,11 @@ try {
     Check 'повторный прогон — заполненное не тронуто, отсутствующее довезено' {
         $product = Join-Path $base 'product.md'
         Set-Content -LiteralPath $product -Value 'заполнено человеком' -Encoding utf8
-        Remove-Item -LiteralPath (Join-Path $base 'decisions.md') -Force
+        Remove-Item -LiteralPath (Join-Path $base 'backlog.md') -Force
         $r = Invoke-BaseInit $base
         if ($r.code -ne 0) { return "код возврата $($r.code): $($r.text)" }
         if ((Get-Content -LiteralPath $product -Raw).Trim() -ne 'заполнено человеком') { return 'product.md перезаписан' }
-        if (-not (Test-Path -LiteralPath (Join-Path $base 'decisions.md') -PathType Leaf)) { return 'decisions.md не довезён' }
+        if (-not (Test-Path -LiteralPath (Join-Path $base 'backlog.md') -PathType Leaf)) { return 'backlog.md не довезён' }
         return $null
     }
 
@@ -177,12 +177,12 @@ try {
     # строке, которой неоткуда взяться нигде, кроме файла базы.
     Check 'связанная копия — содержимое базы в контексте' {
         Set-Content -LiteralPath (Join-Path $base 'product.md') -Encoding utf8 `
-            -Value '# Продукт', '', 'сверка остатков идёт ночным прогоном'
+            -Value '# Продукт', '', 'сверка остатков идёт ночным прогоном', '<!-- пример в комментарии шаблона -->'
         return ExpectText $repo 'сверка остатков идёт ночным прогоном'
     }
 
-    # Подаются три названных файла, а не корень базы: лишний .md до сессии не доходит.
-    Check 'файл в корне базы сверх трёх — в контекст не попадает' {
+    # Подаются два названных файла, а не корень базы: лишний .md до сессии не доходит.
+    Check 'файл в корне базы сверх подаваемых — в контекст не попадает' {
         Set-Content -LiteralPath (Join-Path $base 'extra.md') -Encoding utf8 `
             -Value '# Лишнее', '', 'строка из файла вне подачи'
         $problem = ExpectNoText $repo 'строка из файла вне подачи'
@@ -201,7 +201,44 @@ try {
     }
 
     # Закомментированный пример из шаблона — тот случай, ради которого хук режет комментарии.
-    Check 'пример из HTML-комментария в контекст не попадает' { ExpectNoText $repo 'EF Core' }
+    Check 'пример из HTML-комментария в контекст не попадает' { ExpectNoText $repo 'пример в комментарии шаблона' }
+
+    # Решения подаются оглавлением: строка «читать:» приезжает, тело файла — нет.
+    # Ошибка в одну сторону возвращает цену прежнего decisions.md, в другую — сессия
+    # не узнает, что решение есть.
+    $decisionsDir = Join-Path $base 'decisions'
+    Check 'решений нет — сессии названо, куда их заводить' {
+        return ExpectText $repo 'решений пока нет'
+    }
+
+    Check 'файл решений — строка «читать:» в контексте, тело — нет' {
+        New-Item -ItemType Directory -Force -Path $decisionsDir | Out-Null
+        Set-Content -LiteralPath (Join-Path $decisionsDir 'api.md') -Encoding utf8 `
+            -Value '# API', 'читать: правка эндпоинтов накладной', '', '## Форма', '- тело решения вне подачи'
+        $problem = ExpectText $repo 'правка эндпоинтов накладной'
+        if ($problem) { return $problem }
+        return ExpectNoText $repo 'тело решения вне подачи'
+    }
+
+    Check 'файл решений без «читать:» — в оглавление не попадает' {
+        Set-Content -LiteralPath (Join-Path $decisionsDir 'deploy.md') -Encoding utf8 `
+            -Value '# Развёртывание', '', '- метка файла без строки читать'
+        $problem = ExpectNoText $repo 'decisions/deploy.md` — читать'
+        if (-not $problem) { $problem = ExpectText $repo 'нет строки «читать:»' }
+        Remove-Item -LiteralPath (Join-Path $decisionsDir 'deploy.md') -Force
+        return $problem
+    }
+
+    # Прежний decisions.md в корне базы — наследство старой раскладки: подаваться он
+    # больше не должен, а сверка обязана его назвать.
+    Check 'decisions.md в корне — не подаётся, сверка его называет' {
+        Set-Content -LiteralPath (Join-Path $base 'decisions.md') -Encoding utf8 `
+            -Value '# Решения', '', '## Тема', '- метка прежнего decisions'
+        $problem = ExpectNoText $repo 'метка прежнего decisions'
+        if (-not $problem) { $problem = ExpectText $repo 'разложить решения по файлам decisions/' }
+        Remove-Item -LiteralPath (Join-Path $base 'decisions.md') -Force
+        return $problem
+    }
 
     # Один пропавший файл не должен уносить с собой подачу остальных.
     Check 'файла базы нет — подача остального цела' {

@@ -4,7 +4,8 @@
 #
 # Находка — { severity; file; message; kind }. FAIL — база разошлась с раскладкой,
 # WARN — повод перечитать и решить; kind = secret отличает подозрение на секрет,
-# которое гейт коммита несёт человеку. Сверяется и флоу — запись его шагов. Правила
+# которое гейт коммита несёт человеку. Сверяются и флоу — запись его шагов, — и файлы
+# решений; оглавление решений для подачи собирается здесь же. Правила
 # раскладки, в том числе числа потолков и перечень ключей шага, живут в
 # reference\base-layout.md; здесь нет ни чисел, ни перечня.
 #
@@ -14,10 +15,12 @@
 
 . (Join-Path $PSScriptRoot 'link-state.ps1')
 
-# Файлы базы, которые хук подаёт сессии содержимым, — три названных, а не корень базы;
-# почему — CLAUDE.md. Потолок файла знания — цена подачи, поэтому среди файлов корня
-# он проверяется у них и только у них; у памяти задачи потолок свой.
-$script:KitServedFiles = @('product.md', 'boundaries.md', 'decisions.md')
+# Файлы базы, которые хук подаёт сессии содержимым, — два названных, а не корень базы;
+# решения из decisions/ подаются оглавлением. Почему — CLAUDE.md. Потолок файла знания —
+# цена подачи, поэтому среди файлов корня он проверяется у них и только у них; у файла
+# решений и у памяти задачи потолки свои.
+$script:KitServedFiles = @('product.md', 'boundaries.md')
+$script:KitDecisionsDir = 'decisions'
 
 function New-KitFinding([string]$Severity, [string]$File, [string]$Message, [string]$Kind = '') {
     return [pscustomobject]@{ severity = $Severity; file = $File; message = $Message; kind = $Kind }
@@ -39,6 +42,24 @@ function Get-KitServedLines([string]$Path) {
     return @((Read-KitMarkdown $Path) -split '\r?\n' | Where-Object { $_.Trim() })
 }
 
+# Строка «читать:» файла решений — то, по чему сессия выбирает его, не открыв.
+function Get-KitDecisionReadWhen([string]$Text) {
+    $m = [regex]::Match($Text, '(?im)^\s*читать\s*:\s*(.+?)\s*$')
+    if (-not $m.Success) { return $null }
+    return $m.Groups[1].Value
+}
+
+# Оглавление решений: и подача хука, и сверка берут его отсюда. Файл без строки
+# «читать:» в оглавление не попадает — его называет сверка.
+function Get-KitDecisionIndex([string]$Base) {
+    $dir = Join-Path $Base $script:KitDecisionsDir
+    foreach ($file in @(Get-ChildItem -LiteralPath $dir -File -Filter '*.md' -ErrorAction SilentlyContinue | Sort-Object Name)) {
+        $when = Get-KitDecisionReadWhen (Read-KitMarkdown $file.FullName)
+        if (-not $when) { continue }
+        [pscustomobject]@{ file = "$($script:KitDecisionsDir)/$($file.Name)"; when = $when }
+    }
+}
+
 # Рабочая копия, которую объявляет файл памяти. Опознание памяти держится на этой
 # строке, а не на имени файла; почему — CLAUDE.md.
 function Get-KitDeclaredWorktree([string]$Text) {
@@ -50,7 +71,7 @@ function Get-KitDeclaredWorktree([string]$Text) {
 # Потолки и ключи шага флоу читаются из раскладки; почему — CLAUDE.md. Разбор, который
 # не сошёлся, не молчит: файл без разобранного правила даёт FAIL, а не проходит непроверенным.
 function Get-KitLayoutRules {
-    $result = @{ files = @{}; memory = $null; flowKeys = [ordered]@{}; executors = @() }
+    $result = @{ files = @{}; memory = $null; decision = $null; flowKeys = [ordered]@{}; executors = @() }
     $path = Join-Path $PSScriptRoot '..\reference\base-layout.md'
     try { $text = Get-Content -LiteralPath $path -Raw -ErrorAction Stop } catch { return $result }
 
@@ -77,6 +98,8 @@ function Get-KitLayoutRules {
 
     $memory = [regex]::Match($text, '(?m)^Потолок файла — (\d+) строк\.')
     if ($memory.Success) { $result.memory = [int]$memory.Groups[1].Value }
+    $decision = [regex]::Match($text, '(?m)^Потолок файла решений — (\d+) строк\.')
+    if ($decision.Success) { $result.decision = [int]$decision.Groups[1].Value }
     return $result
 }
 
@@ -228,6 +251,37 @@ function Get-KitRootFindings([string]$Base, $Ceilings) {
             Get-KitKnowledgeCeilingFindings $file.FullName $file.Name $Ceilings
         }
     }
+    # Прежняя раскладка держала решения одним файлом. Он больше не подаётся, и молча
+    # лежащий, он выглядел бы действующим знанием, которого сессия не видит.
+    if (Test-Path -LiteralPath (Join-Path $Base 'decisions.md') -PathType Leaf) {
+        New-KitFinding 'WARN' 'decisions.md' 'больше не подаётся — разложить решения по файлам decisions/ и удалить его'
+    }
+}
+
+function Get-KitDecisionFileFindings([string]$Path, [string]$Label, $Rules) {
+    $text = Read-KitMarkdown $Path
+    if (-not (Get-KitDecisionReadWhen $text)) {
+        New-KitFinding 'FAIL' $Label 'нет строки «читать:» — файла нет в оглавлении, и его не прочтёт никто'
+    }
+    if (-not $Rules.decision) {
+        New-KitFinding 'FAIL' $Label 'потолок не разобран — в раскладке нет строки «Потолок файла решений — N строк.»'
+        return
+    }
+    $count = (Get-KitServedLines $Path).Count
+    if ($count -gt $Rules.decision) {
+        New-KitFinding 'FAIL' $Label "$count строк при потолке $($Rules.decision) — в файле две области, резать на два"
+    }
+}
+
+function Get-KitDecisionFindings([string]$Base, $Rules) {
+    $dir = Join-Path $Base $script:KitDecisionsDir
+    if (-not (Test-Path -LiteralPath $dir -PathType Container)) { return }
+    foreach ($item in @(Get-ChildItem -LiteralPath $dir -Force -ErrorAction SilentlyContinue)) {
+        $label = Get-KitRelativePath $Base (ConvertTo-KitPath $item.FullName)
+        if ($item.PSIsContainer) { New-KitFinding 'WARN' $label "подкаталог в $($script:KitDecisionsDir)/ — решения лежат плоско, файлом на область"; continue }
+        if ($item.Extension -ine '.md') { New-KitFinding 'WARN' $label "не .md в $($script:KitDecisionsDir)/ — каталог держит только файлы решений"; continue }
+        Get-KitDecisionFileFindings (ConvertTo-KitPath $item.FullName) $label $Rules
+    }
 }
 
 # Опознание своей памяти на старте сессии называет её подача в session-start.ps1,
@@ -245,7 +299,7 @@ function Get-KitOwnMemoryFindings([string]$Path, [string]$Label, [string]$Worktr
         New-KitFinding 'FAIL' $Label "нет строки «рабочая копия: $Worktree» — без неё хук память не подаёт"
     }
 
-    foreach ($field in 'ветка', 'Критерий закрытия', 'Человеку') {
+    foreach ($field in 'ветка', 'Критерий закрытия', 'Человеку', 'Решения') {
         if ($text -notmatch "(?im)^\s*(-\s*)?$([regex]::Escape($field))\s*:") {
             New-KitFinding 'WARN' $Label "нет строки «${field}:» из шаблона памяти"
         }
@@ -431,6 +485,7 @@ function Get-KitBaseFindings([string]$Base, [string]$Worktree) {
     Get-KitLinkFindings $Base
     Get-KitGitFindings $Base
     Get-KitRootFindings $Base $rules
+    Get-KitDecisionFindings $Base $rules
     Get-KitFlowFindings $Base $Worktree $rules
     Get-KitWorkFindings $Base $Worktree $rules
 
@@ -466,6 +521,9 @@ function Get-KitCommitFindings([string]$Base, [string]$Worktree, [string[]]$File
         if ($rel -notmatch '\\' -and $rel -match '\.md$') {
             if ($script:KitServedFiles -contains $rel) { Get-KitKnowledgeCeilingFindings $path $rel $rules }
             elseif ($rel -ieq 'flow.md') { Get-KitFlowFindings $Base $Worktree $rules }
+        }
+        elseif ($rel -match "^$($script:KitDecisionsDir)\\[^\\]+\.md$") {
+            Get-KitDecisionFileFindings $path $rel $rules
         }
         elseif ($rel -match '^work\\[^\\]+\.md$') {
             if ($own -and $path -ieq $own) { Get-KitOwnMemoryFindings $path $rel $Worktree $rules }
