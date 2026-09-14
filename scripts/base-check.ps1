@@ -299,7 +299,7 @@ function Get-KitOwnMemoryFindings([string]$Path, [string]$Label, [string]$Worktr
         New-KitFinding 'FAIL' $Label "нет строки «рабочая копия: $Worktree» — без неё хук память не подаёт"
     }
 
-    foreach ($field in 'ветка', 'Критерий закрытия', 'Человеку', 'Решения') {
+    foreach ($field in 'ветка', 'Критерий закрытия', 'Оператору', 'Решения') {
         if ($text -notmatch "(?im)^\s*(-\s*)?$([regex]::Escape($field))\s*:") {
             New-KitFinding 'WARN' $Label "нет строки «${field}:» из шаблона памяти"
         }
@@ -473,7 +473,7 @@ function Get-KitFlowFindings([string]$Base, [string]$Worktree, $Rules) {
         if (-not $executor -or $Rules.executors -contains $executor) { continue }
         if ($null -eq $agents) { $agents = Get-KitVisibleAgents $Worktree }
         if (-not $agents.ContainsKey($executor)) {
-            New-KitFinding 'WARN' 'flow.md' "шаг ${n}: субагента «$executor» не видно — может прийти из плагина; нет его — шаг встанет строкой человеку"
+            New-KitFinding 'WARN' 'flow.md' "шаг ${n}: субагента «$executor» не видно — может прийти из плагина; нет его — шаг встанет строкой оператору"
         }
     }
 }
