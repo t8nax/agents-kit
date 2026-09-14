@@ -42,15 +42,15 @@ function Get-KitServedLines([string]$Path) {
     return @((Read-KitMarkdown $Path) -split '\r?\n' | Where-Object { $_.Trim() })
 }
 
-# Строка «читать:» файла решений — то, по чему сессия выбирает его, не открыв.
+# Строка «когда:» файла решений — то, по чему сессия выбирает его, не открыв.
 function Get-KitDecisionReadWhen([string]$Text) {
-    $m = [regex]::Match($Text, '(?im)^\s*читать\s*:\s*(.+?)\s*$')
+    $m = [regex]::Match($Text, '(?im)^\s*когда\s*:\s*(.+?)\s*$')
     if (-not $m.Success) { return $null }
     return $m.Groups[1].Value
 }
 
 # Оглавление решений: и подача хука, и сверка берут его отсюда. Файл без строки
-# «читать:» в оглавление не попадает — его называет сверка.
+# «когда:» в оглавление не попадает — его называет сверка.
 function Get-KitDecisionIndex([string]$Base) {
     $dir = Join-Path $Base $script:KitDecisionsDir
     foreach ($file in @(Get-ChildItem -LiteralPath $dir -File -Filter '*.md' -ErrorAction SilentlyContinue | Sort-Object Name)) {
@@ -261,7 +261,7 @@ function Get-KitRootFindings([string]$Base, $Ceilings) {
 function Get-KitDecisionFileFindings([string]$Path, [string]$Label, $Rules) {
     $text = Read-KitMarkdown $Path
     if (-not (Get-KitDecisionReadWhen $text)) {
-        New-KitFinding 'FAIL' $Label 'нет строки «читать:» — файла нет в оглавлении, и его не прочтёт никто'
+        New-KitFinding 'FAIL' $Label 'нет строки «когда:» — файла нет в оглавлении, и его не прочтёт никто'
     }
     if (-not $Rules.decision) {
         New-KitFinding 'FAIL' $Label 'потолок не разобран — в раскладке нет строки «Потолок файла решений — N строк.»'

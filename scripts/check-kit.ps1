@@ -203,7 +203,7 @@ try {
     # Закомментированный пример из шаблона — тот случай, ради которого хук режет комментарии.
     Check 'пример из HTML-комментария в контекст не попадает' { ExpectNoText $repo 'пример в комментарии шаблона' }
 
-    # Решения подаются оглавлением: строка «читать:» приезжает, тело файла — нет.
+    # Решения подаются оглавлением: строка «когда:» приезжает, тело файла — нет.
     # Ошибка в одну сторону возвращает цену прежнего decisions.md, в другую — сессия
     # не узнает, что решение есть.
     $decisionsDir = Join-Path $base 'decisions'
@@ -211,20 +211,20 @@ try {
         return ExpectText $repo 'решений пока нет'
     }
 
-    Check 'файл решений — строка «читать:» в контексте, тело — нет' {
+    Check 'файл решений — строка «когда:» в контексте, тело — нет' {
         New-Item -ItemType Directory -Force -Path $decisionsDir | Out-Null
         Set-Content -LiteralPath (Join-Path $decisionsDir 'api.md') -Encoding utf8 `
-            -Value '# API', 'читать: правка эндпоинтов накладной', '', '## Форма', '- тело решения вне подачи'
+            -Value '# API', 'когда: правка эндпоинтов накладной', '', '## Форма', '- тело решения вне подачи'
         $problem = ExpectText $repo 'правка эндпоинтов накладной'
         if ($problem) { return $problem }
         return ExpectNoText $repo 'тело решения вне подачи'
     }
 
-    Check 'файл решений без «читать:» — в оглавление не попадает' {
+    Check 'файл решений без «когда:» — в оглавление не попадает' {
         Set-Content -LiteralPath (Join-Path $decisionsDir 'deploy.md') -Encoding utf8 `
-            -Value '# Развёртывание', '', '- метка файла без строки читать'
-        $problem = ExpectNoText $repo 'decisions/deploy.md` — читать'
-        if (-not $problem) { $problem = ExpectText $repo 'нет строки «читать:»' }
+            -Value '# Развёртывание', '', '- метка файла без строки когда'
+        $problem = ExpectNoText $repo 'decisions/deploy.md` — когда'
+        if (-not $problem) { $problem = ExpectText $repo 'нет строки «когда:»' }
         Remove-Item -LiteralPath (Join-Path $decisionsDir 'deploy.md') -Force
         return $problem
     }

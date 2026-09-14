@@ -49,7 +49,7 @@ function Read-KitDecisionIndex([string]$BaseDir) {
 В ``$dir`` решений пока нет. Решение заводится файлом по разделу «Решения» раскладки.
 "@
     }
-    $lines = $index | ForEach-Object { "- ``$($_.file)`` — читать: $($_.when)" }
+    $lines = $index | ForEach-Object { "- ``$($_.file)`` — когда: $($_.when)" }
     return @"
 
 ## Решения базы
