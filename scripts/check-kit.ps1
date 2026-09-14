@@ -1,10 +1,11 @@
 # agents-kit: то ли делает кит на живом стенде — заводит базу, связывает с ней рабочую
-# копию, подаёт сессии её знание — и молчит ли там, где его не звали.
+# копию, подаёт сессии её знание, будит ждущую сессию ответом оператора — и молчит ли
+# там, где его не звали.
 #   pwsh -NoProfile -File scripts\check-kit.ps1 [-KeepTemp]
 #
-# Стенд один на все три механизма: репозиторий, база, копия и worktree строятся во
+# Стенд один на все механизмы: репозиторий, база, копия и worktree строятся во
 # временной папке разом, и каждая проверка требует его целиком — потому проверки и
-# живут в одном файле, а не в трёх со своей сборкой стенда в каждом. Гоняется
+# живут в одном файле, а не в нескольких со своей сборкой стенда в каждом. Гоняется
 # настоящий хук, а не его пересказ. Проверять это руками значит каждый раз заводить
 # стенд заново — и на третий раз проверять не всё.
 [CmdletBinding()]
@@ -16,6 +17,7 @@ try { [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false) } catc
 $hook = Join-Path $PSScriptRoot 'session-start.ps1'
 $link = Join-Path $PSScriptRoot 'link.ps1'
 $init = Join-Path $PSScriptRoot 'base-init.ps1'
+$script:await = Join-Path $PSScriptRoot 'await-answer.ps1'
 $root = Join-Path ([System.IO.Path]::GetTempPath()) ("agents-kit-check-" + [guid]::NewGuid().ToString('N').Substring(0, 8))
 
 # Первый коммит базы делает base-init.ps1 сам, и без этих переменных он зависел бы
@@ -97,6 +99,22 @@ function ExpectLinkReport([string]$Dir, [int]$Code, [string]$Needle) {
     if ($code -ne $Code) { return "код возврата $code, ожидался $Code" }
     if ($Needle -and $text -notmatch [regex]::Escape($Needle)) { return "в отчёте нет «$Needle»" }
     return $null
+}
+
+# Ожидание ответа живёт отдельным процессом, и зависни он — зависла бы и сверка.
+# Поэтому процесс ждётся с пределом, а не до конца: не вышел — это и есть ответ.
+function Start-AwaitAnswer([string]$Memory, [string]$Worktree) {
+    $info = [System.Diagnostics.ProcessStartInfo]::new('pwsh')
+    foreach ($a in '-NoProfile', '-File', $script:await, '-Memory', $Memory, '-Worktree', $Worktree, '-PollSeconds', '1') { $info.ArgumentList.Add($a) }
+    $info.RedirectStandardOutput = $true
+    $info.StandardOutputEncoding = [System.Text.UTF8Encoding]::new($false)
+    $info.UseShellExecute = $false
+    return [System.Diagnostics.Process]::Start($info)
+}
+
+function Wait-AwaitAnswer($Process, [int]$Seconds) {
+    if (-not $Process.WaitForExit($Seconds * 1000)) { return $null }
+    return $Process.StandardOutput.ReadToEnd().Trim()
 }
 
 function Invoke-BaseInit([string]$Dir) {
@@ -353,6 +371,42 @@ try {
         $after = Get-HookMemoryPath $wt
         if ($after -ine $script:memWt) { return "адрес уехал: $after" }
         return ExpectText $wt 'работа отдельного worktree'
+    }
+
+    # Ожидание — то, чем ждущая сессия просыпается. Проверяется, что оно ждёт, пока
+    # ответа нет, и выходит строкой на каждом конечном состоянии: промолчи оно,
+    # сессия спала бы вечно, и выглядело бы это как «ответа пока нет».
+    Check 'ожидание — вопрос без ответа держит, ответ под вопросом отпускает' {
+        Set-Content -LiteralPath $script:memWt -Encoding utf8 -Value @(
+            '# Разбор накладной', "рабочая копия: $wt", '',
+            '- Оператору: дать доступ к стенду', '', '## Шаги', '- [ ] прогнать сверку на стенде')
+        $p = Start-AwaitAnswer $script:memWt $wt
+        try {
+            if ($null -ne (Wait-AwaitAnswer $p 4)) { return 'вышло без ответа' }
+            Set-Content -LiteralPath $script:memWt -Encoding utf8 -Value @(
+                '# Разбор накладной', "рабочая копия: $wt", '',
+                '- Оператору: дать доступ к стенду', '  - ответ: доступ выдан', '', '## Шаги', '- [ ] прогнать сверку на стенде')
+            $out = Wait-AwaitAnswer $p 15
+            if ($null -eq $out) { return 'ответ записан, а ожидание не вышло' }
+            if ($out -notmatch 'ответ оператора пришёл') { return "вышло не тем: $out" }
+            return $null
+        }
+        finally { if (-not $p.HasExited) { $p.Kill() } }
+    }
+
+    Check 'ожидание — чужая память и удалённый файл отпускают строкой' {
+        Set-KitMemory $script:memWt 'D:\Projects\stranger' 'чужая'
+        $p = Start-AwaitAnswer $script:memWt $wt
+        $out = Wait-AwaitAnswer $p 15
+        if (-not $p.HasExited) { $p.Kill(); return 'на чужой памяти не вышло' }
+        if ($out -notmatch 'не своя') { return "на чужой памяти вышло не тем: $out" }
+
+        Remove-Item -LiteralPath $script:memWt -Force
+        $p = Start-AwaitAnswer $script:memWt $wt
+        $out = Wait-AwaitAnswer $p 15
+        if (-not $p.HasExited) { $p.Kill(); return 'на удалённом файле не вышло' }
+        if ($out -notmatch 'задача закрыта или файл удалён') { return "на удалённом файле вышло не тем: $out" }
+        return $null
     }
 
     Move-Item -LiteralPath $base -Destination $moved
