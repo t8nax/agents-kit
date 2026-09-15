@@ -39,7 +39,7 @@ try {
             exit 0
         }
 
-        $questions = @(Get-KitOperatorQuestions $text | Where-Object { -not $_.nothing })
+        $questions = @(Get-KitOperatorQuestions $text)
         $answered = @($questions | Where-Object { $_.answered })
         if ($answered.Count) {
             Write-Output "ответ оператора пришёл: $($answered.Count) из $($questions.Count) — перечитать память $Memory и вобрать"

@@ -91,31 +91,36 @@ function Get-KitKeyRows([string]$Text) {
     return [regex]::Matches($Text, '(?m)^\|\s*`([^`]+)`\s*\|\s*(.*?)\s*\|\s*(да|нет)\s*\|\s*$')
 }
 
-# Вопросы оператору в памяти. Вопрос — строка «Оператору:» верхнего уровня, кроме «нечего»,
-# и блок строк с отступом под ней; ответ — строка «ответ:» в этом блоке. Ответ без отступа
-# не ответ: иначе новый вопрос сессии читался бы ответом на прежний. Отвеченным вопрос
-# считается по ответу где угодно в блоке — форму блока называет сверка, а ожидание
-# отпускает сессию и на вопросе, записанном не по форме.
+# Вопросы оператору в памяти. Вопрос — подраздел «###» раздела «## Оператору», до следующего
+# заголовка; вне этого раздела «###» вопросом не считается. Строки блока: проза до первой
+# строки ключа — контекст; строка ключа — «- ключ: значение» или «ответ: значение» без
+# маркера. Отвеченным вопрос считается по непустому ответу где угодно в блоке — форму блока
+# называет сверка, а ожидание отпускает сессию и на вопросе, записанном не по форме.
 #
-# Вопрос — { text; lines — строки блока { key; value; raw }, key пуст у строки не в форме
-# ключа; answered }. «нечего» — { nothing = $true } со своими строками блока.
+# Вопрос — { text; context — строки контекста; lines — строки после контекста { key; value;
+# raw }, key пуст у прозы; answered }.
 function Get-KitOperatorQuestions([string]$Text) {
     $questions = [System.Collections.Generic.List[object]]::new()
     $current = $null
+    $inside = $false
     foreach ($line in ($Text -split '\r?\n')) {
-        $question = [regex]::Match($line, '^-\s*Оператору\s*:\s*(.*?)\s*$')
+        $section = [regex]::Match($line, '^##\s+(.+?)\s*$')
+        if ($section.Success) { $inside = ($section.Groups[1].Value -eq 'Оператору'); $current = $null; continue }
+        if (-not $inside) { continue }
+        $question = [regex]::Match($line, '^###\s+(.*?)\s*$')
         if ($question.Success) {
-            $value = $question.Groups[1].Value
             $current = [pscustomobject]@{
-                text = $value; nothing = ($value -match '^«?нечего»?$'); answered = $false
+                text = $question.Groups[1].Value; answered = $false
+                context = [System.Collections.Generic.List[string]]::new()
                 lines = [System.Collections.Generic.List[object]]::new()
             }
             $questions.Add($current)
             continue
         }
-        if (-not $current) { continue }
-        if (-not $line.Trim() -or $line -notmatch '^\s') { $current = $null; continue }
-        $pair = [regex]::Match($line, '^\s+-\s*([^:]+?)\s*:\s*(.*?)\s*$')
+        if (-not $current -or -not $line.Trim()) { continue }
+        $pair = [regex]::Match($line, '^\s*-\s*([^:]+?)\s*:\s*(.*?)\s*$')
+        if (-not $pair.Success) { $pair = [regex]::Match($line, '^\s*(ответ)\s*:\s*(.*?)\s*$') }
+        if (-not $pair.Success -and -not $current.lines.Count) { $current.context.Add($line.Trim()); continue }
         $key = if ($pair.Success) { $pair.Groups[1].Value } else { '' }
         $value = if ($pair.Success) { $pair.Groups[2].Value } else { $line.Trim() }
         $current.lines.Add([pscustomobject]@{ key = $key; value = $value; raw = $line })
@@ -341,7 +346,7 @@ function Get-KitDecisionFindings([string]$Base, $Rules) {
     }
 }
 
-# Вопрос оператор читает без сессии, которая его записала, поэтому форма блока — не
+# Вопрос оператор читает без сессии, которая его записала, поэтому форма подраздела — не
 # пожелание: чего не хватает для ответа, сверка называет красным, и память с таким
 # вопросом не коммитится. Перечень в заголовке и ссылки на соседние строки ловятся
 # только по словам — это WARN.
@@ -353,26 +358,27 @@ function Get-KitQuestionFindings([string]$Text, [string]$Label, $Rules) {
         return
     }
 
-    $real = @($questions | Where-Object { -not $_.nothing })
-    foreach ($q in @($questions | Where-Object { $_.nothing })) {
-        if ($real.Count) { New-KitFinding 'FAIL' $Label '«Оператору: нечего» рядом с вопросами — «нечего» пишется, только когда вопросов нет' }
-        elseif ($q.lines.Count) { New-KitFinding 'FAIL' $Label '«Оператору: нечего» со строками под ней — у «нечего» блока нет' }
-    }
-
-    foreach ($q in $real) {
+    # Контекст — не строка ключа, а абзац под заголовком; из перечня раскладки он берёт
+    # только обязательность.
+    $contextKey = 'контекст'
+    foreach ($q in $questions) {
         $head = $q.text
         $short = if ($head.Length -gt 60) { $head.Substring(0, 60) + '…' } else { $head }
         $at = "вопрос «$short»"
+        if ($Rules.questionKeys[$contextKey] -and -not $q.context.Count) {
+            New-KitFinding 'FAIL' $Label "${at}: нет контекста — абзац сразу под заголовком, без него оператору не на чем ответить"
+        }
         foreach ($l in $q.lines) {
-            if (-not $l.key) { New-KitFinding 'FAIL' $Label "${at}: строка «$($l.value)» не в форме «ключ: значение»" }
-            elseif ($l.key -eq 'сессия за' -and -not $Rules.questionKeys.Contains($l.key)) { New-KitFinding 'FAIL' $Label "${at}: «сессия за:» заменена на «рекомендовано:» — вписать туда вариант слово в слово" }
+            if (-not $l.key) { New-KitFinding 'FAIL' $Label "${at}: строка «$($l.value)» после строк ключей — контекст пишется абзацем сразу под заголовком" }
+            elseif ($l.key -eq $contextKey) { New-KitFinding 'FAIL' $Label "${at}: «${contextKey}:» не ключ — контекст пишется абзацем сразу под заголовком" }
             elseif (-not $Rules.questionKeys.Contains($l.key)) { New-KitFinding 'FAIL' $Label "${at}: ключ «$($l.key)» вне перечня — своих ключей не заводят" }
         }
         foreach ($key in $Rules.questionKeys.Keys) {
-            if (-not $Rules.questionKeys[$key]) { continue }
-            $found = @($q.lines | Where-Object { $_.key -eq $key })
-            if (-not $found.Count) { New-KitFinding 'FAIL' $Label "${at}: нет строки «${key}:» — без неё оператору не на чем ответить" }
-            elseif (-not ($found | Where-Object { $_.value })) { New-KitFinding 'FAIL' $Label "${at}: строка «${key}:» пуста" }
+            if ($key -eq $contextKey -or -not $Rules.questionKeys[$key]) { continue }
+            if (-not @($q.lines | Where-Object { $_.key -eq $key }).Count) {
+                $hint = if ($key -eq 'ответ') { 'сессия пишет её сразу, пустой, последней строкой блока' } else { 'она обязательна в блоке вопроса' }
+                New-KitFinding 'FAIL' $Label "${at}: нет строки «${key}:» — $hint"
+            }
         }
         $options = @($q.lines | Where-Object { $_.key -eq 'вариант' } | ForEach-Object { $_.value })
         if ($options.Count -eq 1) {
@@ -395,11 +401,11 @@ function Get-KitQuestionFindings([string]$Text, [string]$Label, $Rules) {
             New-KitFinding 'FAIL' $Label "${at}: «ответ:» не последней строкой блока"
         }
         if ($head -match '\([а-яa-z0-9]\)|(^|\s)\d\)') {
-            New-KitFinding 'WARN' $Label "${at}: похоже на перечень в заголовке — одно решение на вопрос, остальные — своими блоками"
+            New-KitFinding 'WARN' $Label "${at}: похоже на перечень в заголовке — одно решение на вопрос, остальные — своими подразделами"
         }
-        $body = (@($head) + @($q.lines | Where-Object { $_.key -ne 'ответ' } | ForEach-Object { $_.value })) -join ' '
+        $body = (@($head) + @($q.context) + @($q.lines | Where-Object { $_.key -ne 'ответ' } | ForEach-Object { $_.value })) -join ' '
         if ($body -match '(?i)(?<![\p{L}])(выше|ниже)(?![\p{L}])') {
-            New-KitFinding 'WARN' $Label "${at}: ссылка «выше» или «ниже» — оператор видит только вопрос и критерий; нужное переписать в «контекст»"
+            New-KitFinding 'WARN' $Label "${at}: ссылка «выше» или «ниже» — оператор опирается только на вопрос и критерии; нужное переписать в контекст"
         }
     }
 }
@@ -419,9 +425,19 @@ function Get-KitOwnMemoryFindings([string]$Path, [string]$Label, [string]$Worktr
         New-KitFinding 'FAIL' $Label "нет строки «рабочая копия: $Worktree» — без неё хук память не подаёт"
     }
 
-    foreach ($field in 'ветка', 'Критерий закрытия', 'Оператору', 'Решения') {
-        if ($text -notmatch "(?im)^\s*(-\s*)?$([regex]::Escape($field))\s*:") {
+    # Прежний формат держал критерий и вопросы строками списка в шапке. Разбор их больше не
+    # видит, и промолчи сверка, вопрос выпал бы из ожидания, а память выглядела бы чистой.
+    if ($text -match '(?im)^\s*-\s*(Оператору|Критерий закрытия)\s*:') {
+        New-KitFinding 'FAIL' $Label 'память в прежнем формате — критерий и вопросы оператору стали разделами; переписать по шаблону раскладки'
+    }
+    foreach ($field in 'ветка', 'Решения') {
+        if ($text -notmatch "(?m)^$([regex]::Escape($field))\s*:") {
             New-KitFinding 'WARN' $Label "нет строки «${field}:» из шаблона памяти"
+        }
+    }
+    foreach ($section in 'Критерии закрытия', 'Условия', 'Оператору', 'Флоу', 'Шаги') {
+        if ($text -notmatch "(?m)^##\s+$([regex]::Escape($section))\s*$") {
+            New-KitFinding 'WARN' $Label "нет раздела «## $section» из шаблона памяти"
         }
     }
 
