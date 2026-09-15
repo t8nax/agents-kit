@@ -365,6 +365,7 @@ function Get-KitQuestionFindings([string]$Text, [string]$Label, $Rules) {
         $at = "вопрос «$short»"
         foreach ($l in $q.lines) {
             if (-not $l.key) { New-KitFinding 'FAIL' $Label "${at}: строка «$($l.value)» не в форме «ключ: значение»" }
+            elseif ($l.key -eq 'сессия за' -and -not $Rules.questionKeys.Contains($l.key)) { New-KitFinding 'FAIL' $Label "${at}: «сессия за:» заменена на «рекомендовано:» — вписать туда вариант слово в слово" }
             elseif (-not $Rules.questionKeys.Contains($l.key)) { New-KitFinding 'FAIL' $Label "${at}: ключ «$($l.key)» вне перечня — своих ключей не заводят" }
         }
         foreach ($key in $Rules.questionKeys.Keys) {
@@ -373,8 +374,20 @@ function Get-KitQuestionFindings([string]$Text, [string]$Label, $Rules) {
             if (-not $found.Count) { New-KitFinding 'FAIL' $Label "${at}: нет строки «${key}:» — без неё оператору не на чем ответить" }
             elseif (-not ($found | Where-Object { $_.value })) { New-KitFinding 'FAIL' $Label "${at}: строка «${key}:» пуста" }
         }
-        if (@($q.lines | Where-Object { $_.key -eq 'вариант' }).Count -eq 1) {
+        $options = @($q.lines | Where-Object { $_.key -eq 'вариант' } | ForEach-Object { $_.value })
+        if ($options.Count -eq 1) {
             New-KitFinding 'FAIL' $Label "${at}: один «вариант:» — выбора нет; вариантов два и больше или ни одного"
+        }
+        if (@($options | Group-Object -CaseSensitive | Where-Object { $_.Count -gt 1 }).Count) {
+            New-KitFinding 'FAIL' $Label "${at}: одинаковые «вариант:» — рекомендацию не к чему привязать"
+        }
+        # Рекомендованный вариант опознаётся точным совпадением строки, а не сходством:
+        # варианты разнятся парой слов, и угаданным оказался бы не тот.
+        $recommended = @($q.lines | Where-Object { $_.key -eq 'рекомендовано' })
+        if ($recommended.Count -gt 1) { New-KitFinding 'FAIL' $Label "${at}: «рекомендовано:» больше одной" }
+        elseif ($recommended.Count -and -not $options.Count) { New-KitFinding 'FAIL' $Label "${at}: «рекомендовано:» без вариантов — рекомендовать нечего" }
+        elseif ($recommended.Count -and -not ($options -ccontains $recommended[0].value)) {
+            New-KitFinding 'FAIL' $Label "${at}: «рекомендовано:» не вариант слово в слово — скопировать строку варианта целиком"
         }
         $answers = @($q.lines | Where-Object { $_.key -eq 'ответ' })
         if ($answers.Count -gt 1) { New-KitFinding 'FAIL' $Label "${at}: ответов больше одного" }
