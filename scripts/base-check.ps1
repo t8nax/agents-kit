@@ -2,13 +2,13 @@
 # Дот-сорсится хуками; сами они только переводят находки в свой вывод. Почему
 # сверка не раздваивается — CLAUDE.md.
 #
-# Находка — { severity; file; message; kind }. FAIL — база разошлась с раскладкой,
+# Находка — { severity; file; message; kind }. FAIL — база разошлась с правилами кита,
 # WARN — повод перечитать и решить; kind = secret отличает подозрение на секрет,
 # которое гейт коммита несёт оператору. Сверяются и флоу — запись его шагов, — и файлы
 # решений, и форма вопроса оператору в памяти; оглавление решений для подачи и разбор
-# вопросов для ожидания ответа собираются здесь же. Правила раскладки, в том числе
-# числа потолков и перечни ключей шага и вопроса, живут в
-# reference\base-layout.md; здесь нет ни чисел, ни перечня.
+# вопросов для ожидания ответа собираются здесь же. Правила файлов базы, в том числе
+# потолки и ключи шага флоу, живут в reference\base-layout.md, а памяти задачи и вопроса
+# оператору — в reference\task-memory.md; здесь нет ни чисел, ни перечня.
 #
 # Две точки входа на два момента:
 #   Get-KitBaseFindings    база целиком — то, что расходится само, без всякого коммита
@@ -69,7 +69,7 @@ function Get-KitDeclaredWorktree([string]$Text) {
     return ConvertTo-KitPath $m.Groups[1].Value
 }
 
-# Раздел раскладки — от заголовка до следующего заголовка того же уровня или выше.
+# Раздел справки кита — от заголовка до следующего заголовка того же уровня или выше.
 # Заголовок внутри блока кода разделом не считается: пример шага флоу начинается с «##».
 function Get-KitLayoutSection([string]$Text, [string]$Heading) {
     $level = $Heading.IndexOf(' ')
@@ -129,15 +129,26 @@ function Get-KitOperatorQuestions([string]$Text) {
     return $questions
 }
 
-# Потолки и ключи шага флоу читаются из раскладки; почему — CLAUDE.md. Разбор, который
-# не сошёлся, не молчит: файл без разобранного правила даёт FAIL, а не проходит непроверенным.
+function Read-KitReference([string]$Name) {
+    $path = Join-Path $PSScriptRoot "..\reference\$Name"
+    try { return Get-Content -LiteralPath $path -Raw -ErrorAction Stop } catch { return '' }
+}
+
+# Потолки и ключи читаются из справок кита; почему — CLAUDE.md. Разбор, который не
+# сошёлся, не молчит: файл без разобранного правила даёт FAIL, а не проходит непроверенным.
 function Get-KitLayoutRules {
     $result = @{ files = @{}; memory = $null; decision = $null; flowKeys = [ordered]@{}; executors = @(); questionKeys = [ordered]@{} }
-    $path = Join-Path $PSScriptRoot '..\reference\base-layout.md'
-    try { $text = Get-Content -LiteralPath $path -Raw -ErrorAction Stop } catch { return $result }
 
     # Таблица ключей — единственная в своём разделе с колонкой «да/нет»: у шага флоу —
-    # в «Флоу проекта», у вопроса оператору — в «Вопрос оператору и ответ».
+    # в «Флоу проекта» раскладки, у вопроса оператору — в «Вопрос оператору и ответ» памяти.
+    $memoryText = Read-KitReference 'task-memory.md'
+    foreach ($row in Get-KitKeyRows (Get-KitLayoutSection $memoryText '## Вопрос оператору и ответ')) {
+        $result.questionKeys[$row.Groups[1].Value] = ($row.Groups[3].Value -eq 'да')
+    }
+    $memory = [regex]::Match($memoryText, '(?m)^Потолок файла — (\d+) строк\.')
+    if ($memory.Success) { $result.memory = [int]$memory.Groups[1].Value }
+
+    $text = Read-KitReference 'base-layout.md'
     $flowText = Get-KitLayoutSection $text '## Флоу проекта'
     foreach ($row in Get-KitKeyRows $flowText) {
         $key = $row.Groups[1].Value
@@ -145,9 +156,6 @@ function Get-KitLayoutRules {
         if ($key -eq 'исполнитель') {
             $result.executors = @([regex]::Matches($row.Groups[2].Value, '`([^`<>]+)`') | ForEach-Object { $_.Groups[1].Value })
         }
-    }
-    foreach ($row in Get-KitKeyRows (Get-KitLayoutSection $text '### Вопрос оператору и ответ')) {
-        $result.questionKeys[$row.Groups[1].Value] = ($row.Groups[3].Value -eq 'да')
     }
 
     foreach ($row in [regex]::Matches($text, '(?m)^\|\s*`([^`]+\.md)`\s*\|.*\|\s*([^|]*?)\s*\|\s*$')) {
@@ -158,8 +166,6 @@ function Get-KitLayoutRules {
         $result.files[$row.Groups[1].Value.ToLowerInvariant()] = @{ lines = [int]$cell.Groups[1].Value; section = $section }
     }
 
-    $memory = [regex]::Match($text, '(?m)^Потолок файла — (\d+) строк\.')
-    if ($memory.Success) { $result.memory = [int]$memory.Groups[1].Value }
     $decision = [regex]::Match($text, '(?m)^Потолок файла решений — (\d+) строк\.')
     if ($decision.Success) { $result.decision = [int]$decision.Groups[1].Value }
     return $result
@@ -354,11 +360,11 @@ function Get-KitQuestionFindings([string]$Text, [string]$Label, $Rules) {
     $questions = @(Get-KitOperatorQuestions $Text)
     if (-not $questions.Count) { return }
     if (-not $Rules.questionKeys.Count) {
-        New-KitFinding 'FAIL' $Label 'перечень ключей вопроса не разобран — таблица в разделе «Вопрос оператору и ответ» раскладки'
+        New-KitFinding 'FAIL' $Label 'перечень ключей вопроса не разобран — таблица в разделе «Вопрос оператору и ответ» task-memory.md кита'
         return
     }
 
-    # Контекст — не строка ключа, а абзац под заголовком; из перечня раскладки он берёт
+    # Контекст — не строка ключа, а абзац под заголовком; из перечня task-memory.md он берёт
     # только обязательность.
     $contextKey = 'контекст'
     foreach ($q in $questions) {
@@ -428,7 +434,7 @@ function Get-KitOwnMemoryFindings([string]$Path, [string]$Label, [string]$Worktr
     # Прежний формат держал критерий и вопросы строками списка в шапке. Разбор их больше не
     # видит, и промолчи сверка, вопрос выпал бы из ожидания, а память выглядела бы чистой.
     if ($text -match '(?im)^\s*-\s*(Оператору|Критерий закрытия)\s*:') {
-        New-KitFinding 'FAIL' $Label 'память в прежнем формате — критерий и вопросы оператору стали разделами; переписать по шаблону раскладки'
+        New-KitFinding 'FAIL' $Label 'память в прежнем формате — критерий и вопросы оператору стали разделами; переписать по шаблону task-memory.md'
     }
     foreach ($field in 'ветка', 'Решения') {
         if ($text -notmatch "(?m)^$([regex]::Escape($field))\s*:") {
@@ -444,7 +450,7 @@ function Get-KitOwnMemoryFindings([string]$Path, [string]$Label, [string]$Worktr
     Get-KitQuestionFindings $text $Label $Ceilings
 
     if (-not $Ceilings.memory) {
-        New-KitFinding 'FAIL' $Label 'потолок памяти не разобран — в раскладке нет строки «Потолок файла — N строк.»'
+        New-KitFinding 'FAIL' $Label 'потолок памяти не разобран — в task-memory.md кита нет строки «Потолок файла — N строк.»'
         return
     }
     $count = (Get-KitServedLines $Path).Count
