@@ -5,7 +5,7 @@
 # Находка — { severity; file; message; kind }. FAIL — база разошлась с правилами кита,
 # WARN — повод перечитать и решить; kind = secret отличает подозрение на секрет,
 # которое гейт коммита несёт оператору. Сверяются и флоу — запись его шагов, — и файлы
-# решений, и форма вопроса оператору в памяти; оглавление решений для подачи и разбор
+# решений, и номера строк бэклога, и форма вопроса оператору в памяти; оглавление решений для подачи и разбор
 # вопросов для ожидания ответа собираются здесь же. Правила файлов базы, в том числе
 # потолки и ключи шага флоу, живут в reference\base-layout.md, а памяти задачи и вопроса
 # оператору — в reference\task-memory.md; здесь нет ни чисел, ни перечня.
@@ -306,8 +306,42 @@ function Get-KitKnowledgeCeilingFindings([string]$Path, [string]$Label, $Ceiling
     }
 }
 
-# Файлы корня: каркас на месте, подаваемые не переросли потолки. О файлах сверх каркаса
-# сверка молчит.
+# Номер строки бэклога — её имя, и выдаёт его счётчик в шапке файла, а не наибольший
+# номер из оставшихся строк; почему — CLAUDE.md. Повтор номера и счётчик, который повторит
+# номер следующей записью, — FAIL; строки без номера — дописанные руками или оставшиеся от
+# прежней раскладки — и файл без счётчика чинит /backlog, отсюда WARN.
+function Get-KitBacklogFindings([string]$Path, [string]$Label) {
+    $text = Read-KitMarkdown $Path
+    $items = @(($text -split '\r?\n') | Where-Object { $_ -match '^\s*-\s' })
+    $numbers = @{}
+    $unnumbered = 0
+    foreach ($item in $items) {
+        $m = [regex]::Match($item, '^\s*-\s+B-(\d+)\b')
+        if (-not $m.Success) { $unnumbered++; continue }
+        $n = [int]$m.Groups[1].Value
+        $numbers[$n] = 1 + [int]$numbers[$n]
+    }
+    foreach ($n in @($numbers.Keys | Where-Object { $numbers[$_] -gt 1 } | Sort-Object)) {
+        New-KitFinding 'FAIL' $Label "номер B-$n у $($numbers[$n]) строк — соседние копии выдали один номер; одной из строк выдать новый через счётчик"
+    }
+    if ($unnumbered) {
+        New-KitFinding 'WARN' $Label "$unnumbered строк без номера — пронумерует /backlog"
+    }
+
+    $counter = [regex]::Match($text, '(?im)^\s*следующий\s+номер\s*:\s*B-(\d+)\s*$')
+    if (-not $counter.Success) {
+        New-KitFinding 'WARN' $Label 'нет строки «следующий номер: B-N» — поставит /backlog'
+        return
+    }
+    $next = [int]$counter.Groups[1].Value
+    $max = @($numbers.Keys | Sort-Object -Descending | Select-Object -First 1)
+    if ($max.Count -and $next -le $max[0]) {
+        New-KitFinding 'FAIL' $Label "следующий номер B-$next не выше наибольшего B-$($max[0]) — следующая запись повторит номер; поднять счётчик за наибольший"
+    }
+}
+
+# Файлы корня: каркас на месте, подаваемые не переросли потолки, номера бэклога сходятся
+# со счётчиком. О файлах сверх каркаса сверка молчит.
 function Get-KitRootFindings([string]$Base, $Ceilings) {
     foreach ($name in Get-KitTemplateNames) {
         if (-not (Test-Path -LiteralPath (Join-Path $Base $name) -PathType Leaf)) {
@@ -318,6 +352,7 @@ function Get-KitRootFindings([string]$Base, $Ceilings) {
         if ($script:KitServedFiles -contains $file.Name) {
             Get-KitKnowledgeCeilingFindings $file.FullName $file.Name $Ceilings
         }
+        elseif ($file.Name -ieq 'backlog.md') { Get-KitBacklogFindings $file.FullName $file.Name }
     }
     # Прежняя раскладка держала решения одним файлом. Он больше не подаётся, и молча
     # лежащий, он выглядел бы действующим знанием, которого сессия не видит.
@@ -665,6 +700,7 @@ function Get-KitCommitFindings([string]$Base, [string]$Worktree, [string[]]$File
         if ($rel -notmatch '\\' -and $rel -match '\.md$') {
             if ($script:KitServedFiles -contains $rel) { Get-KitKnowledgeCeilingFindings $path $rel $rules }
             elseif ($rel -ieq 'flow.md') { Get-KitFlowFindings $Base $Worktree $rules }
+            elseif ($rel -ieq 'backlog.md') { Get-KitBacklogFindings $path $rel }
         }
         elseif ($rel -match "^$($script:KitDecisionsDir)\\[^\\]+\.md$") {
             Get-KitDecisionFileFindings $path $rel $rules
