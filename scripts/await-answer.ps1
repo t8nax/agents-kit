@@ -7,7 +7,8 @@
 #
 # Выход — одна строка на любом конечном состоянии, и тишины как исхода нет: сломанное
 # ожидание, промолчав, выглядело бы как «ответа пока нет». Разбор файла — тот же, что
-# у подачи и сверки: Read-KitMarkdown и Get-KitDeclaredWorktree из base-check.ps1.
+# у подачи и сверки: Read-KitMarkdown, Get-KitDeclaredWorktree и Get-KitOperatorQuestions
+# из base-check.ps1.
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)][string]$Memory,
@@ -17,28 +18,6 @@ param(
 
 $ErrorActionPreference = 'Stop'
 try { [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false) } catch { }
-
-# Вопрос — строка «Оператору:» верхнего уровня, кроме «нечего»; ответ — строка
-# «ответ:» с отступом под ним. Ответ под вопросом без отступа не ответ: так его пишет
-# раскладка, и иначе новый вопрос сессии читался бы ответом на прежний.
-function Get-KitOperatorQuestions([string]$Text) {
-    $questions = @()
-    $current = $null
-    foreach ($line in ($Text -split '\r?\n')) {
-        $question = [regex]::Match($line, '^-\s*Оператору\s*:\s*(.*?)\s*$')
-        if ($question.Success) {
-            $current = $null
-            if ($question.Groups[1].Value -match '^«?нечего»?$') { continue }
-            $current = [pscustomobject]@{ text = $question.Groups[1].Value; answered = $false }
-            $questions += $current
-            continue
-        }
-        if (-not $current) { continue }
-        if ($line -match '^\s+-\s*ответ\s*:\s*\S') { $current.answered = $true; continue }
-        if ($line -notmatch '^\s') { $current = $null }
-    }
-    return $questions
-}
 
 try {
     . (Join-Path $PSScriptRoot 'base-check.ps1')
@@ -60,7 +39,7 @@ try {
             exit 0
         }
 
-        $questions = @(Get-KitOperatorQuestions $text)
+        $questions = @(Get-KitOperatorQuestions $text | Where-Object { -not $_.nothing })
         $answered = @($questions | Where-Object { $_.answered })
         if ($answered.Count) {
             Write-Output "ответ оператора пришёл: $($answered.Count) из $($questions.Count) — перечитать память $Memory и вобрать"

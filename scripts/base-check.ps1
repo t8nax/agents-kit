@@ -5,8 +5,9 @@
 # Находка — { severity; file; message; kind }. FAIL — база разошлась с раскладкой,
 # WARN — повод перечитать и решить; kind = secret отличает подозрение на секрет,
 # которое гейт коммита несёт оператору. Сверяются и флоу — запись его шагов, — и файлы
-# решений; оглавление решений для подачи собирается здесь же. Правила
-# раскладки, в том числе числа потолков и перечень ключей шага, живут в
+# решений, и форма вопроса оператору в памяти; оглавление решений для подачи и разбор
+# вопросов для ожидания ответа собираются здесь же. Правила раскладки, в том числе
+# числа потолков и перечни ключей шага и вопроса, живут в
 # reference\base-layout.md; здесь нет ни чисел, ни перечня.
 #
 # Две точки входа на два момента:
@@ -68,24 +69,80 @@ function Get-KitDeclaredWorktree([string]$Text) {
     return ConvertTo-KitPath $m.Groups[1].Value
 }
 
+# Раздел раскладки — от заголовка до следующего заголовка того же уровня или выше.
+# Заголовок внутри блока кода разделом не считается: пример шага флоу начинается с «##».
+function Get-KitLayoutSection([string]$Text, [string]$Heading) {
+    $level = $Heading.IndexOf(' ')
+    $lines = [System.Collections.Generic.List[string]]::new()
+    $inside = $false
+    $fence = $false
+    foreach ($line in ($Text -split '\r?\n')) {
+        if ($line -match '^```') { $fence = -not $fence }
+        if (-not $fence -and $line -match '^(#+)\s') {
+            if ($line.TrimEnd() -eq $Heading) { $inside = $true; continue }
+            if ($inside -and $Matches[1].Length -le $level) { break }
+        }
+        if ($inside) { $lines.Add($line) }
+    }
+    return ($lines -join "`n")
+}
+
+function Get-KitKeyRows([string]$Text) {
+    return [regex]::Matches($Text, '(?m)^\|\s*`([^`]+)`\s*\|\s*(.*?)\s*\|\s*(да|нет)\s*\|\s*$')
+}
+
+# Вопросы оператору в памяти. Вопрос — строка «Оператору:» верхнего уровня, кроме «нечего»,
+# и блок строк с отступом под ней; ответ — строка «ответ:» в этом блоке. Ответ без отступа
+# не ответ: иначе новый вопрос сессии читался бы ответом на прежний. Отвеченным вопрос
+# считается по ответу где угодно в блоке — форму блока называет сверка, а ожидание
+# отпускает сессию и на вопросе, записанном не по форме.
+#
+# Вопрос — { text; lines — строки блока { key; value; raw }, key пуст у строки не в форме
+# ключа; answered }. «нечего» — { nothing = $true } со своими строками блока.
+function Get-KitOperatorQuestions([string]$Text) {
+    $questions = [System.Collections.Generic.List[object]]::new()
+    $current = $null
+    foreach ($line in ($Text -split '\r?\n')) {
+        $question = [regex]::Match($line, '^-\s*Оператору\s*:\s*(.*?)\s*$')
+        if ($question.Success) {
+            $value = $question.Groups[1].Value
+            $current = [pscustomobject]@{
+                text = $value; nothing = ($value -match '^«?нечего»?$'); answered = $false
+                lines = [System.Collections.Generic.List[object]]::new()
+            }
+            $questions.Add($current)
+            continue
+        }
+        if (-not $current) { continue }
+        if (-not $line.Trim() -or $line -notmatch '^\s') { $current = $null; continue }
+        $pair = [regex]::Match($line, '^\s+-\s*([^:]+?)\s*:\s*(.*?)\s*$')
+        $key = if ($pair.Success) { $pair.Groups[1].Value } else { '' }
+        $value = if ($pair.Success) { $pair.Groups[2].Value } else { $line.Trim() }
+        $current.lines.Add([pscustomobject]@{ key = $key; value = $value; raw = $line })
+        if ($key -eq 'ответ' -and $value) { $current.answered = $true }
+    }
+    return $questions
+}
+
 # Потолки и ключи шага флоу читаются из раскладки; почему — CLAUDE.md. Разбор, который
 # не сошёлся, не молчит: файл без разобранного правила даёт FAIL, а не проходит непроверенным.
 function Get-KitLayoutRules {
-    $result = @{ files = @{}; memory = $null; decision = $null; flowKeys = [ordered]@{}; executors = @() }
+    $result = @{ files = @{}; memory = $null; decision = $null; flowKeys = [ordered]@{}; executors = @(); questionKeys = [ordered]@{} }
     $path = Join-Path $PSScriptRoot '..\reference\base-layout.md'
     try { $text = Get-Content -LiteralPath $path -Raw -ErrorAction Stop } catch { return $result }
 
-    # Таблица ключей шага — единственная после заголовка флоу с колонкой «да/нет».
-    $flowAt = [regex]::Match($text, '(?m)^## Флоу проекта\s*$')
-    if ($flowAt.Success) {
-        $flowText = $text.Substring($flowAt.Index)
-        foreach ($row in [regex]::Matches($flowText, '(?m)^\|\s*`([^`]+)`\s*\|\s*(.*?)\s*\|\s*(да|нет)\s*\|\s*$')) {
-            $key = $row.Groups[1].Value
-            $result.flowKeys[$key] = ($row.Groups[3].Value -eq 'да')
-            if ($key -eq 'исполнитель') {
-                $result.executors = @([regex]::Matches($row.Groups[2].Value, '`([^`<>]+)`') | ForEach-Object { $_.Groups[1].Value })
-            }
+    # Таблица ключей — единственная в своём разделе с колонкой «да/нет»: у шага флоу —
+    # в «Флоу проекта», у вопроса оператору — в «Вопрос оператору и ответ».
+    $flowText = Get-KitLayoutSection $text '## Флоу проекта'
+    foreach ($row in Get-KitKeyRows $flowText) {
+        $key = $row.Groups[1].Value
+        $result.flowKeys[$key] = ($row.Groups[3].Value -eq 'да')
+        if ($key -eq 'исполнитель') {
+            $result.executors = @([regex]::Matches($row.Groups[2].Value, '`([^`<>]+)`') | ForEach-Object { $_.Groups[1].Value })
         }
+    }
+    foreach ($row in Get-KitKeyRows (Get-KitLayoutSection $text '### Вопрос оператору и ответ')) {
+        $result.questionKeys[$row.Groups[1].Value] = ($row.Groups[3].Value -eq 'да')
     }
 
     foreach ($row in [regex]::Matches($text, '(?m)^\|\s*`([^`]+\.md)`\s*\|.*\|\s*([^|]*?)\s*\|\s*$')) {
@@ -284,6 +341,56 @@ function Get-KitDecisionFindings([string]$Base, $Rules) {
     }
 }
 
+# Вопрос оператор читает без сессии, которая его записала, поэтому форма блока — не
+# пожелание: чего не хватает для ответа, сверка называет красным, и память с таким
+# вопросом не коммитится. Перечень в заголовке и ссылки на соседние строки ловятся
+# только по словам — это WARN.
+function Get-KitQuestionFindings([string]$Text, [string]$Label, $Rules) {
+    $questions = @(Get-KitOperatorQuestions $Text)
+    if (-not $questions.Count) { return }
+    if (-not $Rules.questionKeys.Count) {
+        New-KitFinding 'FAIL' $Label 'перечень ключей вопроса не разобран — таблица в разделе «Вопрос оператору и ответ» раскладки'
+        return
+    }
+
+    $real = @($questions | Where-Object { -not $_.nothing })
+    foreach ($q in @($questions | Where-Object { $_.nothing })) {
+        if ($real.Count) { New-KitFinding 'FAIL' $Label '«Оператору: нечего» рядом с вопросами — «нечего» пишется, только когда вопросов нет' }
+        elseif ($q.lines.Count) { New-KitFinding 'FAIL' $Label '«Оператору: нечего» со строками под ней — у «нечего» блока нет' }
+    }
+
+    foreach ($q in $real) {
+        $head = $q.text
+        $short = if ($head.Length -gt 60) { $head.Substring(0, 60) + '…' } else { $head }
+        $at = "вопрос «$short»"
+        foreach ($l in $q.lines) {
+            if (-not $l.key) { New-KitFinding 'FAIL' $Label "${at}: строка «$($l.value)» не в форме «ключ: значение»" }
+            elseif (-not $Rules.questionKeys.Contains($l.key)) { New-KitFinding 'FAIL' $Label "${at}: ключ «$($l.key)» вне перечня — своих ключей не заводят" }
+        }
+        foreach ($key in $Rules.questionKeys.Keys) {
+            if (-not $Rules.questionKeys[$key]) { continue }
+            $found = @($q.lines | Where-Object { $_.key -eq $key })
+            if (-not $found.Count) { New-KitFinding 'FAIL' $Label "${at}: нет строки «${key}:» — без неё оператору не на чем ответить" }
+            elseif (-not ($found | Where-Object { $_.value })) { New-KitFinding 'FAIL' $Label "${at}: строка «${key}:» пуста" }
+        }
+        if (@($q.lines | Where-Object { $_.key -eq 'вариант' }).Count -eq 1) {
+            New-KitFinding 'FAIL' $Label "${at}: один «вариант:» — выбора нет; вариантов два и больше или ни одного"
+        }
+        $answers = @($q.lines | Where-Object { $_.key -eq 'ответ' })
+        if ($answers.Count -gt 1) { New-KitFinding 'FAIL' $Label "${at}: ответов больше одного" }
+        elseif ($answers.Count -and $q.lines[$q.lines.Count - 1].key -ne 'ответ') {
+            New-KitFinding 'FAIL' $Label "${at}: «ответ:» не последней строкой блока"
+        }
+        if ($head -match '\([а-яa-z0-9]\)|(^|\s)\d\)') {
+            New-KitFinding 'WARN' $Label "${at}: похоже на перечень в заголовке — одно решение на вопрос, остальные — своими блоками"
+        }
+        $body = (@($head) + @($q.lines | Where-Object { $_.key -ne 'ответ' } | ForEach-Object { $_.value })) -join ' '
+        if ($body -match '(?i)(?<![\p{L}])(выше|ниже)(?![\p{L}])') {
+            New-KitFinding 'WARN' $Label "${at}: ссылка «выше» или «ниже» — оператор видит только вопрос и критерий; нужное переписать в «контекст»"
+        }
+    }
+}
+
 # Опознание своей памяти на старте сессии называет её подача в session-start.ps1,
 # и сверка его там не повторяет (-SkipIdentity). В коммите его назвать больше некому.
 function Get-KitOwnMemoryFindings([string]$Path, [string]$Label, [string]$Worktree, $Ceilings, [switch]$SkipIdentity) {
@@ -304,6 +411,8 @@ function Get-KitOwnMemoryFindings([string]$Path, [string]$Label, [string]$Worktr
             New-KitFinding 'WARN' $Label "нет строки «${field}:» из шаблона памяти"
         }
     }
+
+    Get-KitQuestionFindings $text $Label $Ceilings
 
     if (-not $Ceilings.memory) {
         New-KitFinding 'FAIL' $Label 'потолок памяти не разобран — в раскладке нет строки «Потолок файла — N строк.»'
