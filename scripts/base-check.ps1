@@ -5,7 +5,7 @@
 # Находка — { severity; file; message; kind }. FAIL — база разошлась с правилами кита,
 # WARN — повод перечитать и решить; kind = secret отличает подозрение на секрет,
 # которое гейт коммита несёт оператору. Сверяются и флоу — запись его шагов, — и файлы
-# решений, и номера строк бэклога, и форма вопроса оператору в памяти; оглавление решений для подачи и разбор
+# решений, и номера записей бэклога, и форма вопроса оператору в памяти; оглавление решений для подачи и разбор
 # вопросов для ожидания ответа собираются здесь же. Правила файлов базы, в том числе
 # потолки и ключи шага флоу, живут в reference\base-layout.md, а памяти задачи и вопроса
 # оператору — в reference\task-memory.md; здесь нет ни чисел, ни перечня.
@@ -315,26 +315,30 @@ function Get-KitKnowledgeCeilingFindings([string]$Path, [string]$Label, $Ceiling
     }
 }
 
-# Номер строки бэклога — её имя, и выдаёт его счётчик в шапке файла, а не наибольший
-# номер из оставшихся строк; почему — CLAUDE.md. Повтор номера и счётчик, который повторит
-# номер следующей записью, — FAIL; строки без номера — дописанные руками или оставшиеся от
+# Номер записи бэклога — её имя, и выдаёт его счётчик в шапке файла, а не наибольший
+# номер из оставшихся записей; почему — CLAUDE.md. Запись — заголовок «##»; до первого
+# такого заголовка записью считается и строка списка прежней раскладки, а внутри записи
+# строки списка — её часть «Агенту», а не записи. Повтор номера и счётчик, который повторит
+# номер следующей записью, — FAIL; записи без номера — дописанные руками или оставшиеся от
 # прежней раскладки — и файл без счётчика чинит /backlog, отсюда WARN.
 function Get-KitBacklogFindings([string]$Path, [string]$Label) {
     $text = Read-KitMarkdown $Path
-    $items = @(($text -split '\r?\n') | Where-Object { $_ -match '^\s*-\s' })
     $numbers = @{}
     $unnumbered = 0
-    foreach ($item in $items) {
-        $m = [regex]::Match($item, '^\s*-\s+B-(\d+)\b')
+    $inRecords = $false
+    foreach ($line in ($text -split '\r?\n')) {
+        if ($line -match '^##\s') { $inRecords = $true; $m = [regex]::Match($line, '^##\s+B-(\d+)\b') }
+        elseif (-not $inRecords -and $line -match '^\s*-\s') { $m = [regex]::Match($line, '^\s*-\s+B-(\d+)\b') }
+        else { continue }
         if (-not $m.Success) { $unnumbered++; continue }
         $n = [int]$m.Groups[1].Value
         $numbers[$n] = 1 + [int]$numbers[$n]
     }
     foreach ($n in @($numbers.Keys | Where-Object { $numbers[$_] -gt 1 } | Sort-Object)) {
-        New-KitFinding 'FAIL' $Label "номер B-$n у $($numbers[$n]) строк — соседние копии выдали один номер; одной из строк выдать новый через счётчик"
+        New-KitFinding 'FAIL' $Label "номер B-$n у $($numbers[$n]) записей — соседние копии выдали один номер; одной из записей выдать новый через счётчик"
     }
     if ($unnumbered) {
-        New-KitFinding 'WARN' $Label "$unnumbered строк без номера — пронумерует /backlog"
+        New-KitFinding 'WARN' $Label "$unnumbered записей без номера — пронумерует /backlog"
     }
 
     $counter = [regex]::Match($text, '(?im)^\s*следующий\s+номер\s*:\s*B-(\d+)\s*$')
@@ -408,7 +412,7 @@ function Get-KitQuestionFindings([string]$Text, [string]$Label, $Rules) {
         return
     }
 
-    # Контекст — не строка ключа, а абзац под заголовком; из перечня task-memory.md он берёт
+    # Контекст — не строка ключа, а абзацы под заголовком; из перечня task-memory.md он берёт
     # только обязательность.
     $contextKey = 'контекст'
     foreach ($q in $questions) {
@@ -416,11 +420,11 @@ function Get-KitQuestionFindings([string]$Text, [string]$Label, $Rules) {
         $short = if ($head.Length -gt 60) { $head.Substring(0, 60) + '…' } else { $head }
         $at = "вопрос «$short»"
         if ($Rules.questionKeys[$contextKey] -and -not $q.context.Count) {
-            New-KitFinding 'FAIL' $Label "${at}: нет контекста — абзац сразу под заголовком, без него оператору не на чем ответить"
+            New-KitFinding 'FAIL' $Label "${at}: нет контекста — абзацы сразу под заголовком, без них оператору не на чем ответить"
         }
         foreach ($l in $q.lines) {
-            if (-not $l.key) { New-KitFinding 'FAIL' $Label "${at}: строка «$($l.value)» после строк ключей — контекст пишется абзацем сразу под заголовком" }
-            elseif ($l.key -eq $contextKey) { New-KitFinding 'FAIL' $Label "${at}: «${contextKey}:» не ключ — контекст пишется абзацем сразу под заголовком" }
+            if (-not $l.key) { New-KitFinding 'FAIL' $Label "${at}: строка «$($l.value)» после строк ключей — контекст пишется абзацами сразу под заголовком" }
+            elseif ($l.key -eq $contextKey) { New-KitFinding 'FAIL' $Label "${at}: «${contextKey}:» не ключ — контекст пишется абзацами сразу под заголовком" }
             elseif (-not $Rules.questionKeys.Contains($l.key)) { New-KitFinding 'FAIL' $Label "${at}: ключ «$($l.key)» вне перечня — своих ключей не заводят" }
         }
         foreach ($key in $Rules.questionKeys.Keys) {
@@ -460,6 +464,38 @@ function Get-KitQuestionFindings([string]$Text, [string]$Label, $Rules) {
     }
 }
 
+# Разделы памяти и связь двух её частей. Часть оператору и часть «Агенту» связаны номером
+# критерия и заголовком вопроса слово в слово; строка агенту, чей критерий или вопрос
+# переписан или убран, — не ошибка формы, а повод перечитать, отсюда WARN.
+function Get-KitMemoryLayoutFindings([string]$Text, [string]$Label) {
+    foreach ($section in 'Критерии закрытия', 'Оператору', 'Агенту') {
+        if ($Text -notmatch "(?m)^##\s+$([regex]::Escape($section))\s*$") {
+            New-KitFinding 'WARN' $Label "нет раздела «## $section» из шаблона памяти"
+        }
+    }
+    $agent = Get-KitLayoutSection $Text '## Агенту'
+    foreach ($sub in 'Критерии', 'Вопросы', 'Факты', 'Флоу', 'Шаги') {
+        if ($agent -notmatch "(?m)^###\s+$([regex]::Escape($sub))\s*$") {
+            New-KitFinding 'WARN' $Label "нет подраздела «### $sub» в «Агенту» из шаблона памяти"
+        }
+    }
+
+    $criteria = @([regex]::Matches((Get-KitLayoutSection $Text '## Критерии закрытия'), '(?m)^###\s+(\d+)\.') | ForEach-Object { $_.Groups[1].Value })
+    foreach ($m in [regex]::Matches((Get-KitLayoutSection $agent '### Критерии'), '(?m)^\s*-\s+(\d+)\.')) {
+        if ($criteria -notcontains $m.Groups[1].Value) {
+            New-KitFinding 'WARN' $Label "«Агенту → Критерии»: строка $($m.Groups[1].Value). без критерия с этим номером — номер строки повторяет заголовок «### N.» критерия"
+        }
+    }
+    $questions = @(Get-KitOperatorQuestions $Text | ForEach-Object { $_.text })
+    foreach ($m in [regex]::Matches((Get-KitLayoutSection $agent '### Вопросы'), '(?m)^\s*-\s+«(.+?)»\s*:')) {
+        if ($questions -cnotcontains $m.Groups[1].Value) {
+            $short = $m.Groups[1].Value
+            if ($short.Length -gt 60) { $short = $short.Substring(0, 60) + '…' }
+            New-KitFinding 'WARN' $Label "«Агенту → Вопросы»: «$short» — такого вопроса в «Оператору» нет; заголовок вопроса повторяется слово в слово, отвеченный вопрос уходит вместе со строкой"
+        }
+    }
+}
+
 # Опознание своей памяти на старте сессии называет её подача в session-start.ps1,
 # и сверка его там не повторяет (-SkipIdentity). В коммите его назвать больше некому.
 function Get-KitOwnMemoryFindings([string]$Path, [string]$Label, [string]$Worktree, $Ceilings, [switch]$SkipIdentity) {
@@ -485,11 +521,12 @@ function Get-KitOwnMemoryFindings([string]$Path, [string]$Label, [string]$Worktr
             New-KitFinding 'WARN' $Label "нет строки «${field}:» из шаблона памяти"
         }
     }
-    foreach ($section in 'Критерии закрытия', 'Условия', 'Оператору', 'Флоу', 'Шаги') {
-        if ($text -notmatch "(?m)^##\s+$([regex]::Escape($section))\s*$") {
-            New-KitFinding 'WARN' $Label "нет раздела «## $section» из шаблона памяти"
-        }
+    # Прежняя раскладка держала факты, флоу и шаги разделами верхнего уровня. Вопрос в ней
+    # разбор видит по-прежнему, поэтому это WARN, а не остановка.
+    if ($text -match '(?m)^##\s+(Условия|Флоу|Шаги)\s*$') {
+        New-KitFinding 'WARN' $Label 'память в прежней раскладке — всё, кроме критериев и вопросов, ушло под «## Агенту», «Условия» стали «Фактами»; переписать по шаблону task-memory.md'
     }
+    else { Get-KitMemoryLayoutFindings $text $Label }
 
     Get-KitQuestionFindings $text $Label $Ceilings
 
