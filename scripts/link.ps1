@@ -3,7 +3,7 @@
 #   pwsh -NoProfile -File scripts\link.ps1                        показать состояние связи
 #
 # Состояние связи определяет link-state.ps1; здесь — запись обеих сторон и показ
-# состояния человеку. Почему сторон именно две — CLAUDE.md.
+# состояния оператору. Почему сторон именно две — CLAUDE.md.
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
     [string]$Base,
@@ -49,7 +49,7 @@ if (-not $Base) {
 
 $baseN = ConvertTo-KitPath $Base
 if (-not (Test-Path -LiteralPath $baseN -PathType Container)) {
-    throw "каталога базы «$baseN» не существует — создать его должен человек, скрипт не угадывает, где ей быть"
+    throw "каталога базы «$baseN» не существует — завести её base-init.ps1; link.ps1 базу не заводит и не угадывает, где ей быть"
 }
 
 # Файл принадлежности заводится, только когда его нет вовсе. Нечитаемый или чужой
@@ -58,7 +58,7 @@ $markerPath = Get-KitMarkerPath $baseN
 $marker = Get-KitMarker $baseN
 if (-not $marker) {
     if (Test-Path -LiteralPath $markerPath -PathType Leaf) {
-        throw "«$markerPath» существует, но не разбирается как файл принадлежности базы — разобраться должен человек"
+        throw "«$markerPath» существует, но не разбирается как файл принадлежности базы — разобраться должен оператор"
     }
     $marker = [pscustomobject][ordered]@{ kit = 'agents-kit'; version = 1; workspaces = @() }
     Write-Host "Заведён файл принадлежности базы: $markerPath"

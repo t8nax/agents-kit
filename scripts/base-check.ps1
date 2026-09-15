@@ -4,7 +4,7 @@
 #
 # Находка — { severity; file; message; kind }. FAIL — база разошлась с раскладкой,
 # WARN — повод перечитать и решить; kind = secret отличает подозрение на секрет,
-# которое гейт коммита несёт человеку. Сверяются и флоу — запись его шагов, — и файлы
+# которое гейт коммита несёт оператору. Сверяются и флоу — запись его шагов, — и файлы
 # решений; оглавление решений для подачи собирается здесь же. Правила
 # раскладки, в том числе числа потолков и перечень ключей шага, живут в
 # reference\base-layout.md; здесь нет ни чисел, ни перечня.
@@ -291,7 +291,7 @@ function Get-KitOwnMemoryFindings([string]$Path, [string]$Label, [string]$Worktr
     $declared = Get-KitDeclaredWorktree $text
     if ($declared -and $declared -ine $Worktree) {
         if (-not $SkipIdentity) {
-            New-KitFinding 'FAIL' $Label "объявляет рабочую копию «$declared», а лежит по адресу «$Worktree» — не своя, решает человек"
+            New-KitFinding 'FAIL' $Label "объявляет рабочую копию «$declared», а лежит по адресу «$Worktree» — не своя, решает оператор"
         }
         return
     }
@@ -321,15 +321,15 @@ function Get-KitOwnMemoryFindings([string]$Path, [string]$Label, [string]$Worktr
 function Get-KitForeignMemoryFindings([string]$Base, [string]$Path, [string]$Label) {
     $declared = Get-KitDeclaredWorktree (Read-KitMarkdown $Path)
     if (-not $declared) {
-        New-KitFinding 'FAIL' $Label 'не опознаётся: нет строки «рабочая копия» — не своя, решает человек'
+        New-KitFinding 'FAIL' $Label 'не опознаётся: нет строки «рабочая копия» — не своя, решает оператор'
         return
     }
     if (-not (Test-Path -LiteralPath $declared -PathType Container)) {
-        New-KitFinding 'FAIL' $Label "копии «$declared» нет на диске — задача не закрыта, а вести её некому; не своя, решает человек"
+        New-KitFinding 'FAIL' $Label "копии «$declared» нет на диске — задача не закрыта, а вести её некому; не своя, решает оператор"
         return
     }
     if ((Get-KitWorkMemoryPath $Base $declared) -ine $Path) {
-        New-KitFinding 'FAIL' $Label 'лежит не по адресу объявленной копии — хук её не подаст; не своя, решает человек'
+        New-KitFinding 'FAIL' $Label 'лежит не по адресу объявленной копии — хук её не подаст; не своя, решает оператор'
     }
 }
 
@@ -444,7 +444,7 @@ function Get-KitFlowFindings([string]$Base, [string]$Worktree, $Rules) {
     }
 
     if (-not $steps.Count) {
-        New-KitFinding 'WARN' 'flow.md' 'флоу пуст — /drive не начнёт работу, пока он не написан с человеком'
+        New-KitFinding 'WARN' 'flow.md' 'флоу пуст — /drive не начнёт работу, пока он не написан с оператором'
         return
     }
 
@@ -527,7 +527,7 @@ function Get-KitCommitFindings([string]$Base, [string]$Worktree, [string[]]$File
         }
         elseif ($rel -match '^work\\[^\\]+\.md$') {
             if ($own -and $path -ieq $own) { Get-KitOwnMemoryFindings $path $rel $Worktree $rules }
-            else { New-KitFinding 'FAIL' $rel 'память другой рабочей копии в коммите — её коммитит сессия той копии; не своя, решает человек' }
+            else { New-KitFinding 'FAIL' $rel 'память другой рабочей копии в коммите — её коммитит сессия той копии; не своя, решает оператор' }
         }
         Find-KitSecrets $path $rel
     }

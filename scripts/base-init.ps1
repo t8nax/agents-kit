@@ -14,7 +14,7 @@ $ErrorActionPreference = 'Stop'
 try { [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false) } catch { }
 
 # Приведение пути к единому виду на весь кит одно: напечатанный здесь путь
-# человек скопирует в link.ps1, и разойтись они не должны.
+# копируют в link.ps1, и разойтись они не должны.
 . (Join-Path $PSScriptRoot 'link-state.ps1')
 
 $template = Join-Path $PSScriptRoot '..\template\base'

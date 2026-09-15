@@ -49,14 +49,14 @@ try {
 
     while ($true) {
         if (-not (Test-Path -LiteralPath $Memory -PathType Leaf)) {
-            Write-Output "памяти $Memory нет — задача закрыта или файл удалён; ждать нечего, показать человеку"
+            Write-Output "памяти $Memory нет — задача закрыта или файл удалён; ждать нечего, показать оператору"
             exit 0
         }
 
         $text = Read-KitMarkdown $Memory
         $declared = Get-KitDeclaredWorktree $text
         if ($declared -and $Worktree -and $declared -ine $Worktree) {
-            Write-Output "память $Memory объявляет рабочую копию «$declared», а ждёт «$Worktree» — не своя, решает человек"
+            Write-Output "память $Memory объявляет рабочую копию «$declared», а ждёт «$Worktree» — не своя, решает оператор"
             exit 0
         }
 
@@ -75,6 +75,6 @@ try {
     }
 }
 catch {
-    Write-Output "ожидание ответа сломалось: $($_.Exception.Message) — показать человеку"
+    Write-Output "ожидание ответа сломалось: $($_.Exception.Message) — показать оператору"
     exit 1
 }
