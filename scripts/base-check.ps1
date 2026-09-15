@@ -611,7 +611,7 @@ function Get-KitFlowFindings([string]$Base, [string]$Worktree, $Rules) {
         if (-not $executor -or $Rules.executors -contains $executor) { continue }
         if ($null -eq $agents) { $agents = Get-KitVisibleAgents $Worktree }
         if (-not $agents.ContainsKey($executor)) {
-            New-KitFinding 'WARN' 'flow.md' "шаг ${n}: субагента «$executor» не видно — может прийти из плагина; нет его — шаг встанет строкой оператору"
+            New-KitFinding 'WARN' 'flow.md' "шаг ${n}: субагента «$executor» не видно — может прийти из плагина; нет его — шаг встанет вопросом оператору"
         }
     }
 }
