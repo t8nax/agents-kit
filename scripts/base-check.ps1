@@ -39,6 +39,15 @@ function Read-KitMarkdown([string]$Path) {
     return ([regex]::Replace($text, '(?s)<!--.*?-->', '')).Trim()
 }
 
+# Имя проекта для шапки подачи; где оно живёт — reference\base-layout.md. Хвост
+# « — продукт» из каркаса именем не считается. Заголовка нет — имени нет, а не имя папки.
+function Get-KitProjectName([string]$Base) {
+    $text = Read-KitMarkdown (Join-Path $Base 'product.md')
+    $m = [regex]::Match($text, '(?m)^#\s+(.+?)(?:\s+—\s+продукт)?\s*$')
+    if (-not $m.Success) { return $null }
+    return $m.Groups[1].Value
+}
+
 function Get-KitServedLines([string]$Path) {
     return @((Read-KitMarkdown $Path) -split '\r?\n' | Where-Object { $_.Trim() })
 }

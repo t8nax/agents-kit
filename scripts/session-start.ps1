@@ -207,10 +207,13 @@ try {
                     $layoutLine += "`n- $($ref[1]): ``$refPath``"
                 }
             }
+            $nameLine = ''
+            $name = Get-KitProjectName $state.base
+            if ($name) { $nameLine = "- Проект: $name`n" }
             Emit @"
 # agents-kit — проект под китом
 
-- База знаний: ``$($state.base)``
+$nameLine- База знаний: ``$($state.base)``
 - Рабочая копия: ``$($state.workspace)``$layoutLine
 
 Знание этого проекта живёт в базе и только там. Ниже — инварианты кита; они действуют в этой сессии всегда.

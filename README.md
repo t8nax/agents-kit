@@ -66,7 +66,7 @@ pwsh -NoProfile -File <клон кита>\scripts\link.ps1 -Base <каталог
 
 ## Что видит сессия
 
-Открытая в связанной копии — **знание проекта**: `product.md` и `boundaries.md` содержимым, а не путём до них, и оглавление решений из `decisions/` — по строке на файл, чтобы под задачу прочитать нужные. Вместе с ними приходят путь базы, путь копии, текст [reference/invariants.md](reference/invariants.md) и пути [reference/base-layout.md](reference/base-layout.md) и [reference/task-memory.md](reference/task-memory.md).
+Открытая в связанной копии — **знание проекта**: `product.md` и `boundaries.md` содержимым, а не путём до них, и оглавление решений из `decisions/` — по строке на файл, чтобы под задачу прочитать нужные. Вместе с ними приходят имя проекта из заголовка `product.md`, путь базы, путь копии, текст [reference/invariants.md](reference/invariants.md) и пути [reference/base-layout.md](reference/base-layout.md) и [reference/task-memory.md](reference/task-memory.md).
 
 Разошлась база с правилами кита — висящая запись о копии, осиротевшая память, перерасход потолка, `local/` под версией, пустой или записанный не по форме флоу, файл решений без строки `когда:`, неразложенный прежний `decisions.md` — приходит и раздел сверки с находками. Чистая база его не даёт. Коммит в базу сверяется ещё раз, по своим файлам: красное не пропускается, похожее на секрет пропускает только оператор.
 
