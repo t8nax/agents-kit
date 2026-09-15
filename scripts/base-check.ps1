@@ -1,25 +1,17 @@
-# agents-kit: что в базе знаний не так — единственный ответ на этот вопрос.
-# Дот-сорсится хуками; сами они только переводят находки в свой вывод. Почему
-# сверка не раздваивается — CLAUDE.md.
+# agents-kit: что в базе знаний не так — единственный ответ на этот вопрос; почему
+# единственный — CLAUDE.md. Дот-сорсится хуками, они только переводят находки.
+# Здесь же чтение файла базы, каким его видит сессия, оглавление решений и разбор
+# вопросов оператору. Потолки и перечни ключей — в справках reference\, не здесь.
 #
-# Находка — { severity; file; message; kind }. FAIL — база разошлась с правилами кита,
-# WARN — повод перечитать и решить; kind = secret отличает подозрение на секрет,
-# которое гейт коммита несёт оператору. Сверяются и флоу — запись его шагов, — и файлы
-# решений, и номера записей бэклога, и форма вопроса оператору в памяти; оглавление решений для подачи и разбор
-# вопросов для ожидания ответа собираются здесь же. Правила файлов базы, в том числе
-# потолки и ключи шага флоу, живут в reference\base-layout.md, а памяти задачи и вопроса
-# оператору — в reference\task-memory.md; здесь нет ни чисел, ни перечня.
+# Находка — { severity; file; message; kind }: FAIL — база разошлась с правилами,
+# WARN — перечитать и решить, kind = secret — подозрение на секрет для оператора.
 #
-# Две точки входа на два момента:
-#   Get-KitBaseFindings    база целиком — то, что расходится само, без всякого коммита
-#   Get-KitCommitFindings  файлы коммита и local/ — то, что уедет в историю этим коммитом
+#   Get-KitBaseFindings    база целиком — то, что расходится само, без коммита
+#   Get-KitCommitFindings  файлы коммита и local/ — то, что уедет в историю
 
 . (Join-Path $PSScriptRoot 'link-state.ps1')
 
-# Файлы базы, которые хук подаёт сессии содержимым, — два названных, а не корень базы;
-# решения из decisions/ подаются оглавлением. Почему — CLAUDE.md. Потолок файла знания —
-# цена подачи, поэтому среди файлов корня он проверяется у них и только у них; у файла
-# решений и у памяти задачи потолки свои.
+# Подаваемые содержимым файлы; только у них потолок цены подачи. Почему два — CLAUDE.md.
 $script:KitServedFiles = @('product.md', 'boundaries.md')
 $script:KitDecisionsDir = 'decisions'
 
@@ -27,16 +19,14 @@ function New-KitFinding([string]$Severity, [string]$File, [string]$Message, [str
     return [pscustomobject]@{ severity = $Severity; file = $File; message = $Message; kind = $Kind }
 }
 
-# Файл базы, как его видит сессия: и подача хука, и потолок сверки берут этот текст.
-#
-# Комментарий до сессии не доходит — иначе закомментированный пример из шаблона приехал
-# бы в контекст как факт проекта. Нечитаемый файл — пустая строка, а не исключение:
-# уронив подачу целиком, хук оставил бы сессию без базы, а молчание в ветке Linked
-# неотличимо от «репозиторий не под китом».
+# Файл базы, как его видит сессия: этот текст берут и подача, и потолок. Комментарии
+# вырезаются — пример из шаблона иначе приехал бы фактом проекта. Нечитаемый файл —
+# пустая строка, а не исключение: иначе хук оставил бы сессию без всей базы.
 function Read-KitMarkdown([string]$Path) {
     try { $text = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop } catch { return '' }
     if (-not $text) { return '' }
-    return ([regex]::Replace($text, '(?s)<!--.*?-->', '')).Trim()
+    $text = [regex]::Replace($text, '(?s)<!--.*?-->', '')
+    return ([regex]::Replace($text, '(\r?\n[ \t]*){3,}', "`n`n")).Trim()
 }
 
 # Имя проекта для шапки подачи; где оно живёт — reference\base-layout.md. Хвост
@@ -70,8 +60,7 @@ function Get-KitDecisionIndex([string]$Base) {
     }
 }
 
-# Рабочая копия, которую объявляет файл памяти. Опознание памяти держится на этой
-# строке, а не на имени файла; почему — CLAUDE.md.
+# Рабочая копия, которую объявляет файл памяти; опознание — по ней, не по имени файла.
 function Get-KitDeclaredWorktree([string]$Text) {
     $m = [regex]::Match($Text, '(?im)^\s*рабочая\s+копия\s*:\s*(.+?)\s*$')
     if (-not $m.Success) { return $null }
@@ -100,14 +89,12 @@ function Get-KitKeyRows([string]$Text) {
     return [regex]::Matches($Text, '(?m)^\|\s*`([^`]+)`\s*\|\s*(.*?)\s*\|\s*(да|нет)\s*\|\s*$')
 }
 
-# Вопросы оператору в памяти. Вопрос — подраздел «###» раздела «## Оператору», до следующего
-# заголовка; вне этого раздела «###» вопросом не считается. Строки блока: проза до первой
-# строки ключа — контекст; строка ключа — «- ключ: значение» или «ответ: значение» без
-# маркера. Отвеченным вопрос считается по непустому ответу где угодно в блоке — форму блока
-# называет сверка, а ожидание отпускает сессию и на вопросе, записанном не по форме.
+# Вопросы оператору: подразделы «###» раздела «## Оператору». Проза до первой строки ключа —
+# контекст; строка ключа — «- ключ: значение» или «ответ: значение». Отвеченным вопрос
+# считается по непустому ответу где угодно в блоке: форму называет сверка, а ожидание
+# отпускает сессию и на вопросе не по форме.
 #
-# Вопрос — { text; context — строки контекста; lines — строки после контекста { key; value;
-# raw }, key пуст у прозы; answered }.
+# Вопрос — { text; context; lines — { key; value; raw }, key пуст у прозы; answered }.
 function Get-KitOperatorQuestions([string]$Text) {
     $questions = [System.Collections.Generic.List[object]]::new()
     $current = $null
@@ -143,13 +130,12 @@ function Read-KitReference([string]$Name) {
     try { return Get-Content -LiteralPath $path -Raw -ErrorAction Stop } catch { return '' }
 }
 
-# Потолки и ключи читаются из справок кита; почему — CLAUDE.md. Разбор, который не
-# сошёлся, не молчит: файл без разобранного правила даёт FAIL, а не проходит непроверенным.
+# Потолки и ключи из справок кита. Несошедшийся разбор не молчит: файл без разобранного
+# правила даёт FAIL, а не проходит непроверенным.
 function Get-KitLayoutRules {
     $result = @{ files = @{}; memory = $null; decision = $null; flowKeys = [ordered]@{}; executors = @(); questionKeys = [ordered]@{} }
 
-    # Таблица ключей — единственная в своём разделе с колонкой «да/нет»: у шага флоу —
-    # в «Флоу проекта» раскладки, у вопроса оператору — в «Вопрос оператору и ответ» памяти.
+    # Таблица ключей — единственная в своём разделе с колонкой «да/нет».
     $memoryText = Read-KitReference 'task-memory.md'
     foreach ($row in Get-KitKeyRows (Get-KitLayoutSection $memoryText '## Вопрос оператору и ответ')) {
         $result.questionKeys[$row.Groups[1].Value] = ($row.Groups[3].Value -eq 'да')
@@ -168,11 +154,9 @@ function Get-KitLayoutRules {
     }
 
     foreach ($row in [regex]::Matches($text, '(?m)^\|\s*`([^`]+\.md)`\s*\|.*\|\s*([^|]*?)\s*\|\s*$')) {
-        $cell = [regex]::Match($row.Groups[2].Value, '^(\d+) строк(?:, раздел — (\d+))?$')
+        $cell = [regex]::Match($row.Groups[2].Value, '^(\d+) строк$')
         if (-not $cell.Success) { continue }
-        $section = $null
-        if ($cell.Groups[2].Success) { $section = [int]$cell.Groups[2].Value }
-        $result.files[$row.Groups[1].Value.ToLowerInvariant()] = @{ lines = [int]$cell.Groups[1].Value; section = $section }
+        $result.files[$row.Groups[1].Value.ToLowerInvariant()] = [int]$cell.Groups[1].Value
     }
 
     $decision = [regex]::Match($text, '(?m)^Потолок файла решений — (\d+) строк\.')
@@ -294,42 +278,22 @@ function Get-KitKnowledgeCeilingFindings([string]$Path, [string]$Label, $Ceiling
         return
     }
 
-    $lines = Get-KitServedLines $Path
-    if ($lines.Count -gt $ceiling.lines) {
-        New-KitFinding 'FAIL' $Label "$($lines.Count) строк при потолке $($ceiling.lines) — перечитать по тесту входа, а не поднимать потолок"
-    }
-    if (-not $ceiling.section) { return }
-
-    $name = $null
-    $count = 0
-    foreach ($line in @($lines) + '## ') {
-        if ($line -match '^##\s') {
-            if ($name -and $count -gt $ceiling.section) {
-                New-KitFinding 'FAIL' $Label "раздел «$name»: $count строк при потолке $($ceiling.section) — тема разрослась пересказом, оставить решения"
-            }
-            $name = ($line -replace '^##\s*', '').Trim()
-            $count = 0
-            continue
-        }
-        if ($name -and $line -notmatch '^#') { $count++ }
+    $count = (Get-KitServedLines $Path).Count
+    if ($count -gt $ceiling) {
+        New-KitFinding 'FAIL' $Label "$count строк при потолке $ceiling — перечитать по тесту входа, а не поднимать потолок"
     }
 }
 
-# Номер записи бэклога — её имя, и выдаёт его счётчик в шапке файла, а не наибольший
-# номер из оставшихся записей; почему — CLAUDE.md. Запись — заголовок «##»; до первого
-# такого заголовка записью считается и строка списка прежней раскладки, а внутри записи
-# строки списка — её часть «Агенту», а не записи. Повтор номера и счётчик, который повторит
-# номер следующей записью, — FAIL; записи без номера — дописанные руками или оставшиеся от
-# прежней раскладки — и файл без счётчика чинит /backlog, отсюда WARN.
+# Номер записи бэклога выдаёт счётчик в шапке файла; почему — CLAUDE.md. Запись — заголовок
+# «##». Повтор номера и счётчик не выше наибольшего — FAIL; запись без номера и файл без
+# счётчика чинит /backlog — WARN.
 function Get-KitBacklogFindings([string]$Path, [string]$Label) {
     $text = Read-KitMarkdown $Path
     $numbers = @{}
     $unnumbered = 0
-    $inRecords = $false
     foreach ($line in ($text -split '\r?\n')) {
-        if ($line -match '^##\s') { $inRecords = $true; $m = [regex]::Match($line, '^##\s+B-(\d+)\b') }
-        elseif (-not $inRecords -and $line -match '^\s*-\s') { $m = [regex]::Match($line, '^\s*-\s+B-(\d+)\b') }
-        else { continue }
+        if ($line -notmatch '^##\s') { continue }
+        $m = [regex]::Match($line, '^##\s+B-(\d+)\b')
         if (-not $m.Success) { $unnumbered++; continue }
         $n = [int]$m.Groups[1].Value
         $numbers[$n] = 1 + [int]$numbers[$n]
@@ -353,8 +317,8 @@ function Get-KitBacklogFindings([string]$Path, [string]$Label) {
     }
 }
 
-# Файлы корня: каркас на месте, подаваемые не переросли потолки, номера бэклога сходятся
-# со счётчиком. О файлах сверх каркаса сверка молчит.
+# Файлы корня: каркас на месте, подаваемые в потолке, номера бэклога сходятся со счётчиком.
+# О файлах сверх каркаса сверка молчит.
 function Get-KitRootFindings([string]$Base, $Ceilings) {
     foreach ($name in Get-KitTemplateNames) {
         if (-not (Test-Path -LiteralPath (Join-Path $Base $name) -PathType Leaf)) {
@@ -366,11 +330,6 @@ function Get-KitRootFindings([string]$Base, $Ceilings) {
             Get-KitKnowledgeCeilingFindings $file.FullName $file.Name $Ceilings
         }
         elseif ($file.Name -ieq 'backlog.md') { Get-KitBacklogFindings $file.FullName $file.Name }
-    }
-    # Прежняя раскладка держала решения одним файлом. Он больше не подаётся, и молча
-    # лежащий, он выглядел бы действующим знанием, которого сессия не видит.
-    if (Test-Path -LiteralPath (Join-Path $Base 'decisions.md') -PathType Leaf) {
-        New-KitFinding 'WARN' 'decisions.md' 'больше не подаётся — разложить решения по файлам decisions/ и удалить его'
     }
 }
 
@@ -400,10 +359,8 @@ function Get-KitDecisionFindings([string]$Base, $Rules) {
     }
 }
 
-# Вопрос оператор читает без сессии, которая его записала, поэтому форма подраздела — не
-# пожелание: чего не хватает для ответа, сверка называет красным, и память с таким
-# вопросом не коммитится. Перечень в заголовке и ссылки на соседние строки ловятся
-# только по словам — это WARN.
+# Форма вопроса оператору — FAIL, и такая память не коммитится; почему — CLAUDE.md.
+# Перечень в заголовке и ссылки на соседние строки ловятся только по словам — WARN.
 function Get-KitQuestionFindings([string]$Text, [string]$Label, $Rules) {
     $questions = @(Get-KitOperatorQuestions $Text)
     if (-not $questions.Count) { return }
@@ -412,8 +369,7 @@ function Get-KitQuestionFindings([string]$Text, [string]$Label, $Rules) {
         return
     }
 
-    # Контекст — не строка ключа, а абзацы под заголовком; из перечня task-memory.md он берёт
-    # только обязательность.
+    # Контекст — абзацы под заголовком, из перечня он берёт только обязательность.
     $contextKey = 'контекст'
     foreach ($q in $questions) {
         $head = $q.text
@@ -441,8 +397,7 @@ function Get-KitQuestionFindings([string]$Text, [string]$Label, $Rules) {
         if (@($options | Group-Object -CaseSensitive | Where-Object { $_.Count -gt 1 }).Count) {
             New-KitFinding 'FAIL' $Label "${at}: одинаковые «вариант:» — рекомендацию не к чему привязать"
         }
-        # Рекомендованный вариант опознаётся точным совпадением строки, а не сходством:
-        # варианты разнятся парой слов, и угаданным оказался бы не тот.
+        # Рекомендация — точное совпадение с вариантом; почему — task-memory.md.
         $recommended = @($q.lines | Where-Object { $_.key -eq 'рекомендовано' })
         if ($recommended.Count -gt 1) { New-KitFinding 'FAIL' $Label "${at}: «рекомендовано:» больше одной" }
         elseif ($recommended.Count -and -not $options.Count) { New-KitFinding 'FAIL' $Label "${at}: «рекомендовано:» без вариантов — рекомендовать нечего" }
@@ -464,9 +419,8 @@ function Get-KitQuestionFindings([string]$Text, [string]$Label, $Rules) {
     }
 }
 
-# Разделы памяти и связь двух её частей. Часть оператору и часть «Агенту» связаны номером
-# критерия и заголовком вопроса слово в слово; строка агенту, чей критерий или вопрос
-# переписан или убран, — не ошибка формы, а повод перечитать, отсюда WARN.
+# Разделы памяти и связь двух её частей. Строка агенту без своего критерия или вопроса —
+# не ошибка формы, а повод перечитать: WARN.
 function Get-KitMemoryLayoutFindings([string]$Text, [string]$Label) {
     foreach ($section in 'Критерии закрытия', 'Оператору', 'Агенту') {
         if ($Text -notmatch "(?m)^##\s+$([regex]::Escape($section))\s*$") {
@@ -496,8 +450,8 @@ function Get-KitMemoryLayoutFindings([string]$Text, [string]$Label) {
     }
 }
 
-# Опознание своей памяти на старте сессии называет её подача в session-start.ps1,
-# и сверка его там не повторяет (-SkipIdentity). В коммите его назвать больше некому.
+# Опознание своей памяти на старте называет подача session-start.ps1 (-SkipIdentity);
+# в коммите его назвать больше некому.
 function Get-KitOwnMemoryFindings([string]$Path, [string]$Label, [string]$Worktree, $Ceilings, [switch]$SkipIdentity) {
     $text = Read-KitMarkdown $Path
     $declared = Get-KitDeclaredWorktree $text
@@ -511,22 +465,12 @@ function Get-KitOwnMemoryFindings([string]$Path, [string]$Label, [string]$Worktr
         New-KitFinding 'FAIL' $Label "нет строки «рабочая копия: $Worktree» — без неё хук память не подаёт"
     }
 
-    # Прежний формат держал критерий и вопросы строками списка в шапке. Разбор их больше не
-    # видит, и промолчи сверка, вопрос выпал бы из ожидания, а память выглядела бы чистой.
-    if ($text -match '(?im)^\s*-\s*(Оператору|Критерий закрытия)\s*:') {
-        New-KitFinding 'FAIL' $Label 'память в прежнем формате — критерий и вопросы оператору стали разделами; переписать по шаблону task-memory.md'
-    }
     foreach ($field in 'ветка', 'Решения') {
         if ($text -notmatch "(?m)^$([regex]::Escape($field))\s*:") {
             New-KitFinding 'WARN' $Label "нет строки «${field}:» из шаблона памяти"
         }
     }
-    # Прежняя раскладка держала факты, флоу и шаги разделами верхнего уровня. Вопрос в ней
-    # разбор видит по-прежнему, поэтому это WARN, а не остановка.
-    if ($text -match '(?m)^##\s+(Условия|Флоу|Шаги)\s*$') {
-        New-KitFinding 'WARN' $Label 'память в прежней раскладке — всё, кроме критериев и вопросов, ушло под «## Агенту», «Условия» стали «Фактами»; переписать по шаблону task-memory.md'
-    }
-    else { Get-KitMemoryLayoutFindings $text $Label }
+    Get-KitMemoryLayoutFindings $text $Label
 
     Get-KitQuestionFindings $text $Label $Ceilings
 
@@ -540,9 +484,8 @@ function Get-KitOwnMemoryFindings([string]$Path, [string]$Label, [string]$Worktr
     }
 }
 
-# Память соседней линии сессии не принадлежит, и о живой соседней работе сверка
-# молчит. Говорит она только о файле, который не подаст никто: копии больше нет,
-# адрес не сходится или файл не опознаётся. Содержимое не подаётся никогда.
+# О живой соседней работе сверка молчит; называет только файл, который не подаст никто:
+# копии нет, адрес не сходится или файл не опознаётся. Содержимое не подаётся никогда.
 function Get-KitForeignMemoryFindings([string]$Base, [string]$Path, [string]$Label) {
     $declared = Get-KitDeclaredWorktree (Read-KitMarkdown $Path)
     if (-not $declared) {
@@ -574,8 +517,8 @@ function Get-KitWorkFindings([string]$Base, [string]$Worktree, $Ceilings) {
     }
 }
 
-# Субагенты, которых сверке видно: рабочая копия и пользователь. Субагенты плагинов
-# сверке не видны, поэтому ненайденный исполнитель — WARN, а не FAIL.
+# Субагенты рабочей копии и пользователя. Субагенты плагинов не видны, поэтому
+# ненайденный исполнитель — WARN.
 function Get-KitVisibleAgents([string]$Worktree) {
     $names = @{}
     $dirs = @((Join-Path $HOME '.claude\agents'))
@@ -591,8 +534,7 @@ function Get-KitVisibleAgents([string]$Worktree) {
     return $names
 }
 
-# Описание шага — пункты N.1, N.2 с вложенностью; проза только с отступом под пунктом.
-# Форма нужна глазу, а не проходу шага, поэтому нарушение — WARN.
+# Форма пунктов описания шага нужна глазу, а не проходу шага: нарушение — WARN.
 function Get-KitFlowBodyFindings($Step) {
     $n = $Step.number
     $previous = $null
@@ -632,10 +574,9 @@ function Get-KitFlowBodyFindings($Step) {
     }
 }
 
-# Флоу — шаги, которые /drive проходит по порядку. Сверка называет то, что не даст пройти
-# шаг однозначно: нет обязательного ключа, чужой ключ, невидимый исполнитель, сбитый
-# порядок. Описание шага она проверяет только на форму пунктов, длину флоу — нет. Файла
-# нет — это уже назвала сверка каркаса.
+# Флоу: то, что не даст пройти шаг однозначно, — нет обязательного ключа, чужой ключ,
+# невидимый исполнитель, сбитый порядок. Длину флоу сверка не проверяет; отсутствие
+# файла назвала сверка каркаса.
 function Get-KitFlowFindings([string]$Base, [string]$Worktree, $Rules) {
     $path = Join-Path $Base 'flow.md'
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return }
