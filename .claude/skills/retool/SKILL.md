@@ -19,6 +19,7 @@ description: "Правка механизма кита: добавить или 
 | `scripts/base-check.ps1` | что в базе не так |
 | `scripts/commit-gate.ps1` | пускать ли коммит в базу |
 | `scripts/await-answer.ps1` | пришёл ли ответ оператора в память копии |
+| `scripts/worktree-add.ps1` | как заводят рабочую копию рядом с основной |
 | `scripts/check-kit.ps1` | чем кит проверяется |
 | `reference/invariants.md` | перечень того, что действует в каждой сессии под китом, — без причин |
 | `reference/base-layout.md` | как ведут файлы базы |
