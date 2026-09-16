@@ -25,13 +25,13 @@ description: "Правка кита: добавить или изменить с
 | `plugin/reference/base-layout.md` | как ведут файлы базы |
 | `plugin/reference/task-memory.md` | как ведут память задачи и вопрос оператору в ней |
 | `plugin/reference/backlog-record.md` | как пишут, нумеруют и берут запись бэклога |
-| `plugin/reference/glossary.md` | что значит слово кита |
+| `plugin/reference/glossary.md` | что значит слово кита в проекте под китом |
 | `plugin/skills/<имя>/SKILL.md` | как идёт работа контура проекта под китом |
 | `.claude/skills/<имя>/SKILL.md` | как идёт работа над самим китом |
 | `.claude/agents/<имя>.md` | кто проверяет смысл текста кита |
 | `plugin/template/base/` | каркас новой базы |
 | `README.md` | первое знакомство с китом: что это, как поставить, как начать |
-| `CLAUDE.md` | правила для всего кита и для его правки, чего в ките нет |
+| `CLAUDE.md` | правила для всего кита и для его правки, чего в ките нет, слова его правки |
 | `plugin/.claude-plugin/plugin.json` | чем кит объявлен как плагин и какой он версии |
 | `.claude-plugin/marketplace.json` | чем кит объявлен как маркетплейс |
 
