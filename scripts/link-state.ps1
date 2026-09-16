@@ -54,8 +54,7 @@ function Join-KitScope([string]$Root, [string]$Scope) {
     return ConvertTo-KitPath (Join-Path $Root ($Scope -replace '/', '\'))
 }
 
-# Имя ключа связи: у корня репозитория подсекции нет, и ключ остаётся прежним —
-# копия, связанная до подкаталогов, читается как читалась.
+# Имя ключа связи: у корня репозитория подсекции нет.
 function Get-KitPointerKey([string]$Scope) {
     if (-not $Scope) { return 'agents-kit.base' }
     return "agents-kit.$Scope.base"
@@ -81,8 +80,7 @@ function Get-KitScopedPointers([string]$Dir) {
 }
 
 # Указатель этого каталога — ближайший связанный предок внутри дерева, а нет такого,
-# то корневой ключ репозитория. Копия, связанная целиком, работает как
-# работала; вне связанного каталога сессия не получает ничего, как без указателя.
+# то корневой ключ репозитория. Вне связанного каталога сессия не получает ничего, как без указателя.
 function Resolve-KitPointer([string]$Dir, [string]$Scope) {
     if ($Scope) {
         $scoped = Get-KitScopedPointers $Dir
