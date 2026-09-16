@@ -1,4 +1,4 @@
-# agents-kit: завести связь рабочей копии с базой знаний — обе стороны одной командой.
+# agents-kit: завести связь основной копии с базой знаний — обе стороны одной командой.
 #   pwsh -NoProfile -File scripts\link.ps1 -Base <каталог базы>   связать репозиторий
 #   pwsh -NoProfile -File scripts\link.ps1 -Base <база> -Scope Directory   связать каталог
 #   pwsh -NoProfile -File scripts\link.ps1                        показать состояние связи
@@ -21,10 +21,10 @@ try { [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false) } catc
 
 if (-not $Path) { $Path = (Get-Location).Path }
 $state = Get-KitLinkState $Path
-if ($state.status -eq 'NotGit') { throw "«$Path» не является рабочей копией git — связывать нечего" }
+if ($state.status -eq 'NotGit') { throw "«$Path» не под git — связывать нечего" }
 
 if (-not $Base) {
-    Write-Host "Рабочая копия: $($state.workspace)"
+    Write-Host "Копия:         $($state.workspace)"
     if ($state.scope) { Write-Host "Каталог:       $($state.scope) в репозитории $($state.repo)" }
     if ($state.base) { Write-Host "Указатель:     $($state.base) (ключ $(Get-KitPointerKey $state.scope))" }
     # Связанные каталоги репозитория называются всегда: сессия в несвязанном каталоге
@@ -44,7 +44,7 @@ if (-not $Base) {
             exit 1
         }
         'NotBase' {
-            Write-Host "База:          файла принадлежности нет или он не читается — это не база кита" -ForegroundColor Red
+            Write-Host "База:          списка копий нет или он не читается — это не база кита" -ForegroundColor Red
             exit 1
         }
         'Unlisted' {
@@ -80,16 +80,16 @@ $pointerKey = Get-KitPointerKey $segment
 # своим один путь.
 $workspace = Join-KitScope (Get-KitRepoRoot $Path) $segment
 
-# Файл принадлежности заводится, только когда его нет вовсе. Нечитаемый или чужой
-# файл не перетирается: под ним может лежать список копий, который дороже удобства.
+# Список копий заводится, только когда его нет вовсе. Нечитаемый или чужой
+# файл не перетирается: копии, которые в нём числятся, дороже удобства.
 $markerPath = Get-KitMarkerPath $baseN
 $marker = Get-KitMarker $baseN
 if (-not $marker) {
     if (Test-Path -LiteralPath $markerPath -PathType Leaf) {
-        throw "«$markerPath» существует, но не разбирается как файл принадлежности базы — разобраться должен оператор"
+        throw "«$markerPath» существует, но не разбирается как список копий базы — разобраться должен оператор"
     }
     $marker = [pscustomobject][ordered]@{ kit = 'agents-kit'; version = 1; workspaces = @() }
-    Write-Host "Заведён файл принадлежности базы: $markerPath"
+    Write-Host "Заведён список копий базы: $markerPath"
 }
 
 $known = @()
@@ -101,7 +101,7 @@ else {
     # Пишется прочитанный файл с заменённым списком, а не собранный заново: поле,
     # заведённое будущей версией, переживает добавление копии, а не исчезает молча.
     $marker | Add-Member -NotePropertyName 'workspaces' -NotePropertyValue @($known + $workspace) -Force
-    if ($PSCmdlet.ShouldProcess($markerPath, 'записать список рабочих копий')) {
+    if ($PSCmdlet.ShouldProcess($markerPath, 'записать список копий')) {
         $marker | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $markerPath -Encoding utf8
     }
     Write-Host "База теперь числит копию: $workspace"

@@ -1,7 +1,7 @@
 # agents-kit: завести каталог базы знаний проекта.
 #   pwsh -NoProfile -File scripts\base-init.ps1 -Path <каталог базы> [-Name <имя проекта>]
 #
-# Только заведение. Связывание рабочей копии с базой и файл принадлежности — link.ps1.
+# Только заведение. Связывание основной копии с базой и список копий — link.ps1.
 # Что лежит в базе и по каким правилам — reference\base-layout.md.
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
@@ -25,7 +25,7 @@ if (Test-Path -LiteralPath $baseN -PathType Leaf) {
     throw "«$baseN» — файл, а не каталог"
 }
 
-# Инвариант «В рабочий репозиторий знание не пишется, и каталог знания в нём не создаётся»
+# Инвариант «В репозиторий проекта знание не пишется, и каталог знания в нём не создаётся»
 # исполняется здесь, а не объясняется потом. Проверяется ближайший существующий
 # родитель: самого каталога базы может ещё не быть.
 #
@@ -40,7 +40,7 @@ if ($probe) {
     if ($inside) {
         $insideN = ConvertTo-KitPath $inside
         if ($insideN -ine $baseN) {
-            throw "«$baseN» лежит внутри рабочей копии «$insideN» — база знаний в репозиторий проекта не заводится"
+            throw "«$baseN» лежит внутри репозитория «$insideN» — база знаний в репозиторий проекта не заводится"
         }
     }
 }
@@ -101,5 +101,5 @@ if (-not $head -and $PSCmdlet.ShouldProcess($baseN, 'первый коммит �
 
 Write-Host ''
 Write-Host "Заведено файлов: $added, оставлено нетронутыми: $kept"
-Write-Host "Дальше — связать рабочую копию, из её каталога:"
+Write-Host "Дальше — связать основную копию, из её каталога:"
 Write-Host "  pwsh -NoProfile -File `"$(Join-Path $PSScriptRoot 'link.ps1')`" -Base `"$baseN`""

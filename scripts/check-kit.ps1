@@ -1,9 +1,9 @@
-# agents-kit: то ли делает кит на живом стенде — заводит базу, связывает с ней рабочую
+# agents-kit: то ли делает кит на живом стенде — заводит базу, связывает с ней основную
 # копию, подаёт сессии её знание, будит ждущую сессию ответом оператора — и молчит ли
 # там, где его не звали; после стенда — в порядке ли сам репозиторий кита.
 #   pwsh -NoProfile -File scripts\check-kit.ps1 [-KeepTemp]
 #
-# Стенд один на все механизмы — репозиторий, база, копия и worktree во временной папке, —
+# Стенд один на все скрипты — репозиторий, база, копия и worktree во временной папке, —
 # поэтому проверки живут в одном файле. Гоняется настоящий хук, а не его пересказ.
 [CmdletBinding()]
 param([switch]$KeepTemp)
@@ -96,7 +96,7 @@ function ExpectLinkReport([string]$Dir, [int]$Code, [string]$Needle) {
     return $null
 }
 
-# Ожидание ждётся с пределом: зависни оно — зависла бы и сверка; не вышло — это и есть ответ.
+# Ожидание ждётся с пределом: зависни оно — зависла бы и проверка; не вышло — это и есть ответ.
 function Start-AwaitAnswer([string]$Memory, [string]$Worktree) {
     $info = [System.Diagnostics.ProcessStartInfo]::new('pwsh')
     foreach ($a in '-NoProfile', '-File', $script:await, '-Memory', $Memory, '-Worktree', $Worktree, '-PollSeconds', '1') { $info.ArgumentList.Add($a) }
@@ -127,7 +127,7 @@ function New-TestRepo([string]$Path) {
 }
 
 # Объявленная версия читается и из рабочего дерева, и из выложенного коммита — одной
-# функцией: разойдись чтение, сверка сравнивала бы разное с разным.
+# функцией: разойдись чтение, проверка сравнивала бы разное с разным.
 function Get-KitManifestVersion([string]$Json) {
     if (-not $Json) { return $null }
     try { return [string]((ConvertFrom-Json $Json).version) } catch { return $null }
@@ -183,8 +183,8 @@ try {
     Check 'каталог вне git — хук молчит' { ExpectSilent $plain }
     Check 'репозиторий без указателя — хук молчит' { ExpectSilent $repo }
 
-    # Инвариант «В рабочий репозиторий знание не пишется, и каталог знания в нём не создаётся» исполняет base-init.
-    Check 'база внутри рабочей копии — отказ' {
+    # Инвариант «В репозиторий проекта знание не пишется, и каталог знания в нём не создаётся» исполняет base-init.
+    Check 'база внутри репозитория — отказ' {
         $r = Invoke-BaseInit $inrepo
         if ($r.code -eq 0) { return 'скрипт не отказал' }
         if (Test-Path -LiteralPath $inrepo) { return 'каталог всё-таки создан' }
@@ -215,7 +215,7 @@ try {
         return $null
     }
 
-    # Дальше — склейка с первым механизмом: базу завёл base-init.ps1, связывает link.ps1.
+    # Дальше — склейка с первым скриптом: базу завёл base-init.ps1, связывает link.ps1.
     & pwsh -NoProfile -File $link -Path $repo -Base $base | Out-Null
     Check 'связанная копия — путь базы в контексте' { ExpectText $repo $base }
     Check 'связанная копия — инварианты в контексте' { ExpectText $repo 'Три слоя' }
@@ -331,11 +331,11 @@ try {
     }
 
     Copy-Item -LiteralPath $repo -Destination $copy -Recurse -Force
-    Check 'копия каталога вместе с .git — остановка' { ExpectText $copy 'не числит эту рабочую копию' }
+    Check 'копия каталога вместе с .git — остановка' { ExpectText $copy 'не числит эту копию' }
     Check 'копия каталога вместе с .git — отчёт link.ps1 красный' { ExpectLinkReport $copy 1 'связь односторонняя' }
 
     # Поле, которого в схеме нет, переживает добавление копии.
-    Check 'добавление копии — прочие поля файла принадлежности целы' {
+    Check 'добавление копии — прочие поля списка копий целы' {
         $markerPath = Join-Path $base 'agents-kit.json'
         $m = Get-Content -LiteralPath $markerPath -Raw | ConvertFrom-Json
         $m | Add-Member -NotePropertyName 'note' -NotePropertyValue 'поле будущей версии' -Force
@@ -483,6 +483,15 @@ try {
         if (-not $memWt) { return 'хук не назвал адрес памяти' }
         if ($memWt -ieq $memMain) { return 'адрес тот же, что у основной копии' }
         return $null
+    }
+
+    Check 'связанный каталог в worktree — рабочая копия названа путём worktree, основная отдельно' {
+        $wtFoo = Join-Path $monoWt 'packages\foo'
+        $problem = ExpectText $wtFoo "- Рабочая копия: ``$wtFoo``"
+        if ($problem) { return $problem }
+        $problem = ExpectText $wtFoo "- Основная копия: ``$modFoo``"
+        if ($problem) { return $problem }
+        return ExpectText $wtFoo "рабочая копия: $wtFoo``"
     }
 
     Check 'отчёт link.ps1 в корне монорепы — называет связанные каталоги' {

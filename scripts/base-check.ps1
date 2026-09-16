@@ -208,17 +208,17 @@ function Find-KitSecrets([string]$Path, [string]$Label) {
     }
 }
 
-# Сторона базы у связи. Хук сверяет связь от копии; висящую запись в списке оттуда
+# Сторона базы у связи. Хук проверяет связь от копии; висящую запись в списке оттуда
 # не видно — копии, от которой смотреть, больше нет.
 function Get-KitLinkFindings([string]$Base) {
     $marker = Get-KitMarker $Base
     if (-not $marker) {
-        New-KitFinding 'FAIL' 'agents-kit.json' 'файла принадлежности нет или он не читается — это не база кита'
+        New-KitFinding 'FAIL' 'agents-kit.json' 'списка копий нет или он не читается — это не база кита'
         return
     }
     $list = @($marker.workspaces | Where-Object { $_ } | ForEach-Object { ConvertTo-KitPath $_ })
     if (-not $list.Count) {
-        New-KitFinding 'FAIL' 'agents-kit.json' 'база не числит ни одной рабочей копии — связывает link.ps1'
+        New-KitFinding 'FAIL' 'agents-kit.json' 'база не числит ни одной основной копии — связывает link.ps1'
         return
     }
 
@@ -233,7 +233,7 @@ function Get-KitLinkFindings([string]$Base) {
             continue
         }
         if ($Base -ieq $ws -or $Base.StartsWith($ws + '\', [StringComparison]::OrdinalIgnoreCase)) {
-            New-KitFinding 'FAIL' '.' "база лежит внутри рабочей копии «$ws» — знание в рабочий репозиторий не пишется"
+            New-KitFinding 'FAIL' '.' "база лежит внутри основной копии «$ws» — знание в репозиторий проекта не пишется"
         }
 
         $state = Get-KitLinkState $ws
@@ -241,7 +241,7 @@ function Get-KitLinkFindings([string]$Base) {
             New-KitFinding 'FAIL' 'agents-kit.json' "«$ws» не git-репозиторий — запись висит"
         }
         elseif ($state.workspace -ine $ws) {
-            New-KitFinding 'FAIL' 'agents-kit.json' "«$ws» — не рабочая копия, а часть «$($state.workspace)»: в список идёт каталог, для которого записан указатель, и worktree в него не пишется"
+            New-KitFinding 'FAIL' 'agents-kit.json' "«$ws» — не основная копия, а часть «$($state.workspace)»: в список идёт каталог, для которого записан указатель, и worktree в него не пишется"
         }
         elseif ($state.status -eq 'NoPointer') {
             New-KitFinding 'FAIL' 'agents-kit.json' "у копии «$ws» указатель снят — запись висит: связать заново link.ps1 или убрать запись"

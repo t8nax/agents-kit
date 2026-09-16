@@ -1,4 +1,4 @@
-# agents-kit: завести рабочую копию проекта рядом с основной — git worktree на новой
+# agents-kit: завести рабочую копию проекта рядом с репозиторием — git worktree на новой
 # ветке под названным или случайным именем.
 #   pwsh -NoProfile -File scripts\worktree-add.ps1 [-Name <имя>] [-Path <копия>]
 #
@@ -30,13 +30,13 @@ $nouns = @(
 if (-not $Path) { $Path = (Get-Location).Path }
 $state = Get-KitLinkState $Path
 switch ($state.status) {
-    'NotGit'    { throw "«$Path» не является рабочей копией git — заводить копию не от чего" }
+    'NotGit'    { throw "«$Path» не под git — заводить копию не от чего" }
     'NoPointer' { throw "каталог «$($state.workspace)» под китом не числится — сначала взять его под кит скиллом /onboard" }
     'Linked'    { }
     default     { throw "связь копии «$($state.workspace)» с базой разорвана — link.ps1 без аргументов покажет, что именно" }
 }
 
-# От корня репозитория и рядом с ним, а не с рабочей копией и не с текущим worktree:
+# От корня репозитория и рядом с ним, а не со связанным каталогом и не с текущим worktree:
 # копия связанного подкаталога легла бы внутрь рабочего дерева, а копии заводились бы
 # друг от друга и расползались по разным родителям.
 $workspace = $state.repo
@@ -77,4 +77,4 @@ Write-Host "Ветка:                  $Name"
 if ($state.scope) {
     Write-Host "Сессию открывать в:     $(Join-KitScope $target $state.scope)"
 }
-Write-Host "Связь с базой общая с основной копией «$workspace» — link.ps1 не нужен."
+Write-Host "Связь с базой общая с основной копией «$($state.workspace)» — link.ps1 не нужен."

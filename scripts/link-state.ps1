@@ -17,7 +17,7 @@ function ConvertTo-KitPath([string]$Path) {
     return $full.Replace('/', '\').TrimEnd('\')
 }
 
-# Корень репозитория: worktree приводится к основной копии, от которой заведён.
+# Корень репозитория: worktree приводится к репозиторию, от которого заведён.
 function Get-KitRepoRoot([string]$Dir) {
     $top = Invoke-KitGit $Dir @('rev-parse', '--show-toplevel')
     if (-not $top) { return $null }
@@ -106,7 +106,7 @@ function Resolve-KitPointer([string]$Dir, [string]$Scope) {
 #   workspace  ключ связи   что взято под кит, в основной копии: проект, а не линия работы
 #   worktree   ключ памяти  то же самое в дереве этой сессии: у worktree оно своё
 # Ключ — абсолютный путь, не git remote: у каталога, скопированного с .git, тот же origin,
-# и remote пропустил бы ровно тот случай, ради которого сверка заведена.
+# и remote пропустил бы ровно тот случай, ради которого проверка заведена.
 function Get-KitRoots([string]$Dir) {
     $tree = Get-KitTreeRoot $Dir
     if (-not $tree) { return $null }
@@ -146,8 +146,8 @@ function Get-KitMarkerPath([string]$BaseDir) {
     return (Join-Path $BaseDir 'agents-kit.json')
 }
 
-# Файл принадлежности базы. Возвращает объект или $null, если файла нет либо он
-# не разбирается: маркер отличает базу кита от произвольного каталога, на который
+# Список копий базы. Возвращает объект или $null, если файла нет либо он
+# не разбирается: список копий отличает базу кита от произвольного каталога, на который
 # указатель попал по опечатке.
 function Get-KitMarker([string]$BaseDir) {
     $path = Get-KitMarkerPath $BaseDir
@@ -165,13 +165,13 @@ function Test-KitWorkspaceKnown($Marker, [string]$Workspace) {
 
 # Единственная цепочка состояний связи. Порядок важен: каждое следующее условие
 # имеет смысл, только когда предыдущее пройдено, — по несуществующему пути нечего
-# читать, а в каталоге без файла принадлежности нечего сверять.
+# читать, а в каталоге без списка копий нечего проверять.
 #
 #   NotGit      каталог вне git-репозитория
 #   NoPointer   ни каталог, ни репозиторий базы не объявили — под китом не числится
 #   BaseMissing указатель есть, каталога базы нет
-#   NotBase     каталог есть, но файла принадлежности нет или он не читается
-#   Unlisted    база есть, но этот рабочий корень не числит своим
+#   NotBase     каталог есть, но списка копий нет или он не читается
+#   Unlisted    база есть, но эту копию не числит своей
 #   Linked      обе стороны сошлись
 function Get-KitLinkState([string]$Dir) {
     $state = [ordered]@{
