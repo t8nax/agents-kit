@@ -1,7 +1,7 @@
 # agents-kit: то ли делает кит на живом стенде — заводит базу, связывает с ней основную
 # копию, подаёт сессии её знание, будит ждущую сессию ответом оператора — и молчит ли
 # там, где его не звали; после стенда — в порядке ли сам репозиторий кита.
-#   pwsh -NoProfile -File scripts\check-kit.ps1 [-KeepTemp]
+#   pwsh -NoProfile -File check-kit.ps1 [-KeepTemp]
 #
 # Стенд один на все скрипты — репозиторий, база, копия и worktree во временной папке, —
 # поэтому проверки живут в одном файле. Гоняется настоящий хук, а не его пересказ.
@@ -11,10 +11,11 @@ param([switch]$KeepTemp)
 $ErrorActionPreference = 'Stop'
 try { [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false) } catch { }
 
-$hook = Join-Path $PSScriptRoot 'session-start.ps1'
-$link = Join-Path $PSScriptRoot 'link.ps1'
-$init = Join-Path $PSScriptRoot 'base-init.ps1'
-$script:await = Join-Path $PSScriptRoot 'await-answer.ps1'
+$scripts = Join-Path $PSScriptRoot 'plugin\scripts'
+$hook = Join-Path $scripts 'session-start.ps1'
+$link = Join-Path $scripts 'link.ps1'
+$init = Join-Path $scripts 'base-init.ps1'
+$script:await = Join-Path $scripts 'await-answer.ps1'
 $root = Join-Path ([System.IO.Path]::GetTempPath()) ("agents-kit-check-" + [guid]::NewGuid().ToString('N').Substring(0, 8))
 
 # Без этих переменных первый коммит base-init.ps1 зависел бы от конфига машины.
@@ -133,7 +134,7 @@ function Get-KitManifestVersion([string]$Json) {
     try { return [string]((ConvertFrom-Json $Json).version) } catch { return $null }
 }
 
-# Файлы кита — отслеживаемые и новые неигнорируемые, пути от корня с прямыми слешами.
+# Файлы кита — отслеживаемые и новые неигнорируемые, пути от корня репозитория с прямыми слешами.
 function Get-KitFiles([string]$Kit) {
     return @(& git -C $Kit ls-files --cached --others --exclude-standard 2>$null | Where-Object { $_ } | Sort-Object -Unique)
 }
@@ -507,17 +508,17 @@ try {
     Check 'каталог без agents-kit.json — не база' { ExpectText $repo 'ведёт не в базу' }
 
     # Дальше — не стенд, а сам репозиторий кита.
-    $kit = Split-Path $PSScriptRoot -Parent
+    $kit = $PSScriptRoot
 
     Check 'версия кита поднята относительно выложенной' {
-        $declared = Get-KitManifestVersion (Get-Content -LiteralPath (Join-Path $kit '.claude-plugin\plugin.json') -Raw)
-        if (-not $declared) { return 'в .claude-plugin\plugin.json не читается version' }
+        $declared = Get-KitManifestVersion (Get-Content -LiteralPath (Join-Path $kit 'plugin\.claude-plugin\plugin.json') -Raw)
+        if (-not $declared) { return 'в plugin\.claude-plugin\plugin.json не читается version' }
 
         # Выложенное — вышестоящая ветка текущей: именно её несут установленные копии.
         # Нет вышестоящей или файла в ней — кит никуда не выложен, устаревать нечему.
         $upstream = & git -C $kit rev-parse --abbrev-ref '@{u}' 2>$null
         if ($LASTEXITCODE -ne 0 -or -not $upstream) { return $null }
-        $publishedJson = (& git -C $kit show "${upstream}:.claude-plugin/plugin.json" 2>$null) -join "`n"
+        $publishedJson = (& git -C $kit show "${upstream}:plugin/.claude-plugin/plugin.json" 2>$null) -join "`n"
         if ($LASTEXITCODE -ne 0) { return $null }
         $published = Get-KitManifestVersion $publishedJson
         if (-not $published) { return $null }
@@ -531,7 +532,7 @@ try {
         $changed = @($changed | Where-Object { $_ })
         if (-not $changed.Count) { return $null }
 
-        return "дерево разошлось с $upstream, а version прежняя ($declared) — поднять её в .claude-plugin\plugin.json"
+        return "дерево разошлось с $upstream, а version прежняя ($declared) — поднять её в plugin\.claude-plugin\plugin.json"
     }
 
     Check 'версия объявлена одним адресом — запись маркетплейса её не дублирует' {
@@ -544,6 +545,16 @@ try {
     }
 
     $kitFiles = Get-KitFiles $kit
+
+    # Установка копирует каталог source целиком: что лежит в нём, едет пользователю кита.
+    Check 'пользователю едет только plugin — правки кита в нём нет' {
+        $marketplace = Get-Content -LiteralPath (Join-Path $kit '.claude-plugin\marketplace.json') -Raw | ConvertFrom-Json
+        $sources = @($marketplace.plugins | ForEach-Object { $_.source } | Where-Object { $_ -ne './plugin' })
+        if ($sources.Count) { return "source маркетплейса — $($sources -join ', '), а не ./plugin" }
+        $inside = @($kitFiles | Where-Object { $_ -match '^plugin/(?:.*/)?(?:\.claude/|CLAUDE\.md$|check-kit\.ps1$)' })
+        if ($inside.Count) { return "в plugin лежит правка кита: $($inside -join ', ')" }
+        return $null
+    }
 
     # Таблица адресов retool — единственный перечень ответственностей файлов: файл без строки
     # никто не найдёт по вопросу, строка без файла ведёт в пустоту.
@@ -586,9 +597,13 @@ try {
         $names = @{}
         foreach ($f in $kitFiles) { $names[(Split-Path $f -Leaf)] = $true }
         $found = foreach ($entry in $kitText) {
-            # Путь от каталога кита: файл или каталог должен найтись среди файлов кита.
-            foreach ($m in [regex]::Matches($entry.text, '(?<![\p{L}\p{Nd}_./\\-])((?:\.claude[/\\](?:skills|agents)|reference|scripts|skills|template[/\\]base)[/\\][\p{L}\p{Nd}_./\\-]*)')) {
+            # Путь от корня репозитория, а в тексте внутри plugin — от plugin: так его видит
+            # пользователь кита. .claude в plugin не лежит — его путь всегда от корня.
+            # Файл или каталог должен найтись среди файлов кита.
+            $from = if ($entry.file -like 'plugin/*') { 'plugin/' } else { '' }
+            foreach ($m in [regex]::Matches($entry.text, '(?<![\p{L}\p{Nd}_./\\-])((?:plugin[/\\])?(?:\.claude[/\\](?:skills|agents)|hooks|reference|scripts|skills|template[/\\]base)[/\\][\p{L}\p{Nd}_./\\-]*)')) {
                 $path = $m.Groups[1].Value.Replace('\', '/').TrimEnd('.')
+                if (-not $path.StartsWith('plugin/') -and -not $path.StartsWith('.claude/')) { $path = $from + $path }
                 if (-not ($kitFiles | Where-Object { $_ -eq $path -or $_.StartsWith($path.TrimEnd('/') + '/') })) {
                     "$($entry.file):$($entry.line) $path"
                 }

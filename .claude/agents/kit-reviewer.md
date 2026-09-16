@@ -12,8 +12,8 @@ model: inherit
 ## Текст кита
 
 - `README.md`, `CLAUDE.md`;
-- `reference/`, `skills/`, `.claude/skills/`, `.claude/agents/`, `template/`;
-- в `scripts/*.ps1` — шапки, комментарии и строки, которые скрипт печатает; код не проверяется.
+- `plugin/reference/`, `plugin/skills/`, `plugin/template/`, `.claude/skills/`, `.claude/agents/`;
+- в `plugin/scripts/*.ps1` и `check-kit.ps1` — шапки, комментарии и строки, которые скрипт печатает; код не проверяется.
 
 Читатель и момент файла — по его строке в таблице «Куда кладётся правка» `.claude/skills/retool/SKILL.md` и по его первым строкам.
 
@@ -59,7 +59,7 @@ model: inherit
 
 - ссылка на другой файл;
 - один термин в разных утверждениях;
-- раздел «Правка кита» в `reference/glossary.md`.
+- раздел «Правка кита» в `plugin/reference/glossary.md`.
 
 ## Замечание
 

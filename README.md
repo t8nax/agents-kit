@@ -18,10 +18,10 @@
 
 ## Установка
 
-**Каталог автозагрузки — для того, кто кит правит.** Ссылка на клон в `~/.claude/skills/`: кит грузится прямо из клона, без установки и без версий.
+**Каталог автозагрузки — для того, кто кит правит.** Ссылка на `plugin` клона в `~/.claude/skills/`: кит грузится прямо из клона, без установки и без версий.
 
 ```powershell
-New-Item -ItemType Junction -Path "$env:USERPROFILE\.claude\skills\agents-kit" -Target <клон кита>
+New-Item -ItemType Junction -Path "$env:USERPROFILE\.claude\skills\agents-kit" -Target <клон кита>\plugin
 ```
 
 **Маркетплейс — для того, кто китом пользуется.**
@@ -53,15 +53,15 @@ claude plugin update agents-kit@agents-kit
 Сначала база — каталог рядом с рабочими копиями, вне них, с именем вида `<проект>-knowledge`:
 
 ```powershell
-pwsh -NoProfile -File <клон кита>\scripts\base-init.ps1 -Path <каталог базы> -Name "<имя проекта>"
+pwsh -NoProfile -File <клон кита>\plugin\scripts\base-init.ps1 -Path <каталог базы> -Name "<имя проекта>"
 ```
 
-Скрипт раскладывает каркас с именем проекта в заголовках (без `-Name` — имя каталога) и заводит репозиторий; повторный прогон заполненного не трогает и довозит недостающее. Что за файлы — [reference/base-layout.md](reference/base-layout.md).
+Скрипт раскладывает каркас с именем проекта в заголовках (без `-Name` — имя каталога) и заводит репозиторий; повторный прогон заполненного не трогает и довозит недостающее. Что за файлы — [plugin/reference/base-layout.md](plugin/reference/base-layout.md).
 
 Дальше из основной копии:
 
 ```powershell
-pwsh -NoProfile -File <клон кита>\scripts\link.ps1 -Base <каталог базы>
+pwsh -NoProfile -File <клон кита>\plugin\scripts\link.ps1 -Base <каталог базы>
 ```
 
 Команда пишет обе стороны. Под кит идёт один каталог репозитория — та же команда с `-Scope Directory`, запущенная в нём. Вторая основная копия проекта связывается так же; `git worktree` связывать не нужно — он приводится к основной копии. Без аргументов скрипт показывает, как связано сейчас, и называет связанные каталоги репозитория, — первая диагностика при разрыве и при молчании кита.
@@ -80,7 +80,7 @@ pwsh -NoProfile -File <клон кита>\scripts\link.ps1 -Base <каталог
 
 ## Что видит сессия
 
-Открытая в связанной копии — **знание проекта**, что именно — [reference/base-layout.md](reference/base-layout.md). С ним — имя проекта, путь базы и копии, текст [reference/invariants.md](reference/invariants.md) и пути остальных справок из [reference/](reference/).
+Открытая в связанной копии — **знание проекта**, что именно — [plugin/reference/base-layout.md](plugin/reference/base-layout.md). С ним — имя проекта, путь базы и копии, текст [plugin/reference/invariants.md](plugin/reference/invariants.md) и пути остальных справок из [plugin/reference/](plugin/reference/).
 
 Разошлась база с правилами кита — приходит раздел сверки с находками; чистая база его не даёт. Коммит в базу сверяется ещё раз по своим файлам: красное не проходит, похожее на секрет пропускает только оператор.
 
@@ -90,4 +90,4 @@ pwsh -NoProfile -File <клон кита>\scripts\link.ps1 -Base <каталог
 
 ## Глоссарий
 
-Что значат слова кита — [reference/glossary.md](reference/glossary.md).
+Что значат слова кита — [plugin/reference/glossary.md](plugin/reference/glossary.md).
