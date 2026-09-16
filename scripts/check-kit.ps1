@@ -126,6 +126,13 @@ function New-TestRepo([string]$Path) {
     & git -C $Path commit -qm init | Out-Null
 }
 
+# Объявленная версия читается и из рабочего дерева, и из выложенного коммита — одной
+# функцией: разойдись чтение, сверка сравнивала бы разное с разным.
+function Get-KitManifestVersion([string]$Json) {
+    if (-not $Json) { return $null }
+    try { return [string]((ConvertFrom-Json $Json).version) } catch { return $null }
+}
+
 $plain   = Join-Path $root 'plain'
 $repo    = Join-Path $root 'repo'
 $copy    = Join-Path $root 'repo-copy'
@@ -466,6 +473,44 @@ try {
 
     & git -C $repo config --local agents-kit.base $notbase
     Check 'каталог без agents-kit.json — не база' { ExpectText $repo 'ведёт не в базу' }
+
+    # Дальше — не стенд, а сам репозиторий кита: забытый подъём версии молчит везде, кроме
+    # этой проверки. Почему ловит его сверка — CLAUDE.md.
+    $kit = Split-Path $PSScriptRoot -Parent
+
+    Check 'версия кита поднята относительно выложенной' {
+        $declared = Get-KitManifestVersion (Get-Content -LiteralPath (Join-Path $kit '.claude-plugin\plugin.json') -Raw)
+        if (-not $declared) { return 'в .claude-plugin\plugin.json не читается version' }
+
+        # Выложенное — вышестоящая ветка текущей: именно её несут установленные копии.
+        # Нет вышестоящей или файла в ней — кит никуда не выложен, устаревать нечему.
+        $upstream = & git -C $kit rev-parse --abbrev-ref '@{u}' 2>$null
+        if ($LASTEXITCODE -ne 0 -or -not $upstream) { return $null }
+        $publishedJson = (& git -C $kit show "${upstream}:.claude-plugin/plugin.json" 2>$null) -join "`n"
+        if ($LASTEXITCODE -ne 0) { return $null }
+        $published = Get-KitManifestVersion $publishedJson
+        if (-not $published) { return $null }
+
+        if ($declared -ne $published) { return $null }
+
+        # Незакоммиченное считается наравне с закоммиченным: вопрос не «что уже в истории»,
+        # а «доедет ли то, что сейчас в дереве».
+        $changed = @(& git -C $kit diff --name-only $upstream 2>$null) +
+                   @(& git -C $kit ls-files --others --exclude-standard 2>$null)
+        $changed = @($changed | Where-Object { $_ })
+        if (-not $changed.Count) { return $null }
+
+        return "дерево разошлось с $upstream, а version прежняя ($declared) — поднять её в .claude-plugin\plugin.json, иначе установленные плагином киты правку не получат"
+    }
+
+    Check 'версия объявлена одним адресом — запись маркетплейса её не дублирует' {
+        $marketplace = Get-Content -LiteralPath (Join-Path $kit '.claude-plugin\marketplace.json') -Raw | ConvertFrom-Json
+        $named = @($marketplace.plugins |
+            Where-Object { $_.PSObject.Properties.Name -contains 'version' } |
+            ForEach-Object { $_.name })
+        if ($named.Count) { return "запись маркетплейса объявляет version: $($named -join ', ') — версию несёт только plugin.json, и второе поле разошлось бы с ним молча" }
+        return $null
+    }
 
     Write-Host ''
     Write-Host "Пройдено: $script:passed, провалено: $script:failed"
