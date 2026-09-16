@@ -1,6 +1,6 @@
 # agents-kit: то ли делает кит на живом стенде — заводит базу, связывает с ней рабочую
 # копию, подаёт сессии её знание, будит ждущую сессию ответом оператора — и молчит ли
-# там, где его не звали.
+# там, где его не звали; после стенда — в порядке ли сам репозиторий кита.
 #   pwsh -NoProfile -File scripts\check-kit.ps1 [-KeepTemp]
 #
 # Стенд один на все механизмы — репозиторий, база, копия и worktree во временной папке, —
@@ -131,6 +131,30 @@ function New-TestRepo([string]$Path) {
 function Get-KitManifestVersion([string]$Json) {
     if (-not $Json) { return $null }
     try { return [string]((ConvertFrom-Json $Json).version) } catch { return $null }
+}
+
+# Файлы кита — отслеживаемые и новые неигнорируемые, пути от корня с прямыми слешами.
+function Get-KitFiles([string]$Kit) {
+    return @(& git -C $Kit ls-files --cached --others --exclude-standard 2>$null | Where-Object { $_ } | Sort-Object -Unique)
+}
+
+# Строки текста кита для проверок путей и упоминаний файлов: .md целиком, в .ps1 — только
+# комментарии, в коде стенда пути — данные проверок. Раздел «Чего в ките нет» в CLAUDE.md
+# называет отсутствующее намеренно и пропускается.
+function Get-KitTextLines([string]$Kit, [string[]]$Files) {
+    foreach ($file in $Files) {
+        $isScript = $file -like '*.ps1'
+        if (-not $isScript -and $file -notlike '*.md') { continue }
+        $lines = @(Get-Content -LiteralPath (Join-Path $Kit $file) -Encoding utf8)
+        $skip = $false
+        for ($i = 0; $i -lt $lines.Count; $i++) {
+            $text = $lines[$i]
+            if ($file -eq 'CLAUDE.md' -and $text -match '^## ') { $skip = $text -eq '## Чего в ките нет' }
+            if ($skip) { continue }
+            if ($isScript -and $text -notmatch '^\s*#') { continue }
+            [pscustomobject]@{ file = $file; line = $i + 1; text = $text }
+        }
+    }
 }
 
 $plain   = Join-Path $root 'plain'
@@ -476,8 +500,7 @@ try {
 
     # Дальше — не стенд, а сам репозиторий кита: забытый подъём версии молчит везде, кроме
     # этой проверки. Поставленный маркетплейсом кит обновляется только со сменой номера, и
-    # команда обновления отвечает «всё актуально». Ловит сверка, а не скрипт релиза: обычный
-    # пуш обошёл бы скрипт молча.
+    # команда обновления отвечает «всё актуально».
     $kit = Split-Path $PSScriptRoot -Parent
 
     Check 'версия кита поднята относительно выложенной' {
@@ -511,6 +534,66 @@ try {
             Where-Object { $_.PSObject.Properties.Name -contains 'version' } |
             ForEach-Object { $_.name })
         if ($named.Count) { return "запись маркетплейса объявляет version: $($named -join ', ') — версию несёт только plugin.json, и второе поле разошлось бы с ним молча" }
+        return $null
+    }
+
+    $kitFiles = Get-KitFiles $kit
+
+    # Таблица адресов retool — единственный перечень ответственностей файлов: файл без строки
+    # никто не найдёт по вопросу, строка без файла ведёт в пустоту.
+    Check 'каждый файл кита числится в таблице retool, и каждая строка таблицы — существующий файл' {
+        $skill = @(Get-Content -LiteralPath (Join-Path $kit '.claude\skills\retool\SKILL.md') -Encoding utf8)
+        $inTable = $false
+        $rows = foreach ($text in $skill) {
+            if ($text -match '^## ') { $inTable = $text -eq '## Куда кладётся правка'; continue }
+            if ($inTable -and $text -match '^\| `([^`]+)` \|') { $Matches[1] }
+        }
+        if (-not $rows) { return 'в .claude\skills\retool\SKILL.md не найдена таблица «Куда кладётся правка»' }
+
+        $patterns = foreach ($row in $rows) {
+            $regex = (($row -split '<имя>') | ForEach-Object { [regex]::Escape($_) }) -join '[^/]+'
+            [pscustomobject]@{ row = $row; regex = $(if ($row.EndsWith('/')) { "^$regex" } else { "^$regex$" }) }
+        }
+        $problems = @()
+        $unlisted = @($kitFiles | Where-Object { $f = $_; -not ($patterns | Where-Object { $f -match $_.regex }) })
+        if ($unlisted.Count) { $problems += "нет строки у: $($unlisted -join ', ')" }
+        $empty = @($patterns | Where-Object { $p = $_; -not ($kitFiles | Where-Object { $_ -match $p.regex }) } | ForEach-Object { $_.row })
+        if ($empty.Count) { $problems += "строка без файла: $($empty -join ', ')" }
+        if ($problems.Count) { return $problems -join '; ' }
+        return $null
+    }
+
+    $kitText = @(Get-KitTextLines $kit $kitFiles)
+
+    # Только .md: абсолютный путь в комментарии скрипта — пример формы пути, и отличить его
+    # от настоящего адреса нельзя; пример в тексте пишется заглушкой <…>.
+    Check 'в тексте кита нет машинно-зависимых путей' {
+        $found = @($kitText | Where-Object { $_.file -like '*.md' } | Where-Object {
+            $_.text -match '(?<![\p{L}\p{Nd}])[A-Za-z]:[\\/][\p{L}\p{Nd}_.-]' -or
+            $_.text -match '(?<![\p{L}\p{Nd}_.-])/(?:Users|home)/[\p{L}\p{Nd}_.-]'
+        } | ForEach-Object { "$($_.file):$($_.line)" })
+        if ($found.Count) { return "абсолютный путь машины в $($found -join ', ') — пример пишется заглушкой <…>" }
+        return $null
+    }
+
+    Check 'упомянутые в тексте кита файлы кита существуют' {
+        $names = @{}
+        foreach ($f in $kitFiles) { $names[(Split-Path $f -Leaf)] = $true }
+        $found = foreach ($entry in $kitText) {
+            # Путь от каталога кита: файл или каталог должен найтись среди файлов кита.
+            foreach ($m in [regex]::Matches($entry.text, '(?<![\p{L}\p{Nd}_./\\-])((?:\.claude[/\\](?:skills|agents)|reference|scripts|skills|template[/\\]base)[/\\][\p{L}\p{Nd}_./\\-]*)')) {
+                $path = $m.Groups[1].Value.Replace('\', '/').TrimEnd('.')
+                if (-not ($kitFiles | Where-Object { $_ -eq $path -or $_.StartsWith($path.TrimEnd('/') + '/') })) {
+                    "$($entry.file):$($entry.line) $path"
+                }
+            }
+            # Имя без каталога: такое имя должно быть у одного из файлов кита.
+            foreach ($m in [regex]::Matches($entry.text, '(?<![\p{L}\p{Nd}_./\\<>-])([\p{L}\p{Nd}_.-]+\.(?:md|ps1))(?![\p{L}\p{Nd}_-])')) {
+                if (-not $names.ContainsKey($m.Groups[1].Value)) { "$($entry.file):$($entry.line) $($m.Groups[1].Value)" }
+            }
+        }
+        $found = @($found)
+        if ($found.Count) { return "нет такого файла: $($found -join '; ')" }
         return $null
     }
 
