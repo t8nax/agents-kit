@@ -12,8 +12,7 @@
 . (Join-Path $PSScriptRoot 'link-state.ps1')
 
 # Подаваемые содержимым файлы; только у них потолок цены подачи. Названы поимённо, а не корень
-# базы: подача корня везла бы в каждую сессию любой положенный туда .md. Новый подаваемый файл —
-# правка здесь, а не файл в базе.
+# базы: подача корня везла бы в каждую сессию любой положенный туда .md.
 $script:KitServedFiles = @('product.md', 'boundaries.md')
 $script:KitDecisionsDir = 'decisions'
 
@@ -202,7 +201,7 @@ function Find-KitSecrets([string]$Path, [string]$Label) {
     for ($i = 0; $i -lt $lines.Count; $i++) {
         foreach ($pattern in $script:KitSecretPatterns) {
             if ($lines[$i] -match $pattern) {
-                New-KitFinding 'WARN' "${Label}:$($i + 1)" 'похоже на секрет — значение живёт там, где его читает код, а в базе только в local/' 'secret'
+                New-KitFinding 'WARN' "${Label}:$($i + 1)" 'похоже на секрет — инвариант «Секреты не попадают в git базы»' 'secret'
                 break
             }
         }
@@ -287,10 +286,10 @@ function Get-KitKnowledgeCeilingFindings([string]$Path, [string]$Label, $Ceiling
     }
 }
 
-# Номер записи бэклога выдаёт счётчик в шапке файла; почему и как — backlog-record.md. По
-# истории git номер тоже не вычислить: она не видит незакоммиченных записей соседней копии.
-# Запись — заголовок «##». Повтор номера и счётчик не выше наибольшего — FAIL; запись без
-# номера и файл без счётчика чинит /backlog — WARN.
+# Номер записи бэклога выдаёт счётчик в шапке файла: из оставшихся записей номер не вычислить,
+# по истории git тоже — она не видит незакоммиченных записей соседней копии. Запись — заголовок
+# «##». Повтор номера и счётчик не выше наибольшего — FAIL; запись без номера и файл без
+# счётчика чинит /backlog — WARN.
 function Get-KitBacklogFindings([string]$Path, [string]$Label) {
     $text = Read-KitMarkdown $Path
     $numbers = @{}
@@ -363,7 +362,7 @@ function Get-KitDecisionFindings([string]$Base, $Rules) {
     }
 }
 
-# Форма вопроса оператору — FAIL, и такая память не коммитится: отвечают часто без спросившей
+# Форма вопроса оператору — FAIL: отвечают часто без спросившей
 # сессии, и ответ по вопросу не по форме не на что опереть. Перечень в заголовке и ссылки на
 # соседние строки ловятся только по словам — WARN.
 function Get-KitQuestionFindings([string]$Text, [string]$Label, $Rules) {
@@ -402,7 +401,7 @@ function Get-KitQuestionFindings([string]$Text, [string]$Label, $Rules) {
         if (@($options | Group-Object -CaseSensitive | Where-Object { $_.Count -gt 1 }).Count) {
             New-KitFinding 'FAIL' $Label "${at}: одинаковые «вариант:»"
         }
-        # Рекомендация — точное совпадение с вариантом; почему — task-memory.md.
+        # Рекомендация — точное совпадение с вариантом: варианты часто разнятся парой слов.
         $recommended = @($q.lines | Where-Object { $_.key -eq 'рекомендовано' })
         if ($recommended.Count -gt 1) { New-KitFinding 'FAIL' $Label "${at}: «рекомендовано:» больше одной" }
         elseif ($recommended.Count -and -not $options.Count) { New-KitFinding 'FAIL' $Label "${at}: «рекомендовано:» без вариантов" }
