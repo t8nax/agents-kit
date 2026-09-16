@@ -1,8 +1,7 @@
 # agents-kit: завести каталог базы знаний проекта.
 #   pwsh -NoProfile -File scripts\base-init.ps1 -Path <каталог базы> [-Name <имя проекта>]
 #
-# Только заведение. Связывание рабочей копии с базой — ответственность link.ps1,
-# и файл принадлежности пишет только он: второго места для этого кода нет.
+# Только заведение. Связывание рабочей копии с базой и файл принадлежности — link.ps1.
 # Что лежит в базе и по каким правилам — reference\base-layout.md.
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
@@ -13,8 +12,7 @@ param(
 $ErrorActionPreference = 'Stop'
 try { [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false) } catch { }
 
-# Приведение пути к единому виду на весь кит одно: напечатанный здесь путь
-# копируют в link.ps1, и разойтись они не должны.
+# Путь приводится link-state.ps1, как и в link.ps1: напечатанный здесь путь копируют в него.
 . (Join-Path $PSScriptRoot 'link-state.ps1')
 
 $template = Join-Path $PSScriptRoot '..\template\base'

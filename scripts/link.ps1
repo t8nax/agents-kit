@@ -63,7 +63,7 @@ if (-not $Base) {
 
 $baseN = ConvertTo-KitPath $Base
 if (-not (Test-Path -LiteralPath $baseN -PathType Container)) {
-    throw "каталога базы «$baseN» не существует — завести её base-init.ps1; link.ps1 базу не заводит и не угадывает, где ей быть"
+    throw "каталога базы «$baseN» не существует — завести её base-init.ps1"
 }
 
 # Что связывается, решает -Scope, а не то, откуда запустили: иначе запуск из

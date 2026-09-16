@@ -1,10 +1,7 @@
-# agents-kit: что в базе знаний не так — единственный ответ на этот вопрос. Дот-сорсится
-# хуками, они только переводят находки. Здесь же чтение файла базы, каким его видит сессия,
-# список подаваемых, оглавление решений и разбор вопросов оператору: иначе подача и потолок
-# считали бы разный текст. Потолки и перечни ключей — в справках reference\, не здесь:
-# их читает и пишущая сессия, а вторая копия разошлась бы молча.
-#
-# Проверок этого скрипта в check-kit.ps1 нет: скрипт, проверяющий скрипт, здесь перебор.
+# agents-kit: что в базе знаний не так. Дот-сорсится хуками. Здесь же чтение файла базы,
+# каким его видит сессия, список подаваемых, оглавление решений и разбор вопросов оператору:
+# иначе подача и потолок считали бы разный текст. Потолки и перечни ключей читаются
+# из справок reference\.
 #
 # Находка — { severity; file; message; kind }: FAIL — база разошлась с правилами,
 # WARN — перечитать и решить, kind = secret — подозрение на секрет для оператора.
@@ -259,21 +256,21 @@ function Get-KitLinkFindings([string]$Base) {
 function Get-KitGitFindings([string]$Base) {
     $top = Invoke-KitGit $Base @('rev-parse', '--show-toplevel')
     if (-not $top) {
-        New-KitFinding 'FAIL' '.' 'база не под git — знанию некуда коммититься'
+        New-KitFinding 'FAIL' '.' 'база не под git'
         return
     }
     if ((ConvertTo-KitPath $top) -ine $Base) {
-        New-KitFinding 'FAIL' '.' "база лежит внутри репозитория «$(ConvertTo-KitPath $top)» — коммит знания уйдёт в него"
+        New-KitFinding 'FAIL' '.' "база лежит внутри репозитория «$(ConvertTo-KitPath $top)»"
         return
     }
 
     & git -C $Base check-ignore -q 'local/' 2>$null
     if ($LASTEXITCODE -ne 0) {
-        New-KitFinding 'FAIL' '.gitignore' 'local/ не игнорируется — значения кредов уедут в историю базы (строка «local/» в .gitignore)'
+        New-KitFinding 'FAIL' '.gitignore' 'local/ не игнорируется — нужна строка «local/» в .gitignore'
     }
     $tracked = @(& git -C $Base ls-files -- 'local' 2>$null | Where-Object { $_ })
     if ($tracked.Count) {
-        New-KitFinding 'FAIL' $tracked[0] "файлов из local/ под версией: $($tracked.Count) — секрет уже в истории, удалением не лечится: ротировать утёкшее"
+        New-KitFinding 'FAIL' $tracked[0] "файлов из local/ под версией: $($tracked.Count) — секрет уже в истории: ротировать утёкшее"
     }
 }
 
@@ -306,7 +303,7 @@ function Get-KitBacklogFindings([string]$Path, [string]$Label) {
         $numbers[$n] = 1 + [int]$numbers[$n]
     }
     foreach ($n in @($numbers.Keys | Where-Object { $numbers[$_] -gt 1 } | Sort-Object)) {
-        New-KitFinding 'FAIL' $Label "номер B-$n у $($numbers[$n]) записей — соседние копии выдали один номер; одной из записей выдать новый через счётчик"
+        New-KitFinding 'FAIL' $Label "номер B-$n у $($numbers[$n]) записей — одной из записей выдать новый через счётчик"
     }
     if ($unnumbered) {
         New-KitFinding 'WARN' $Label "$unnumbered записей без номера — пронумерует /backlog"
@@ -320,7 +317,7 @@ function Get-KitBacklogFindings([string]$Path, [string]$Label) {
     $next = [int]$counter.Groups[1].Value
     $max = @($numbers.Keys | Sort-Object -Descending | Select-Object -First 1)
     if ($max.Count -and $next -le $max[0]) {
-        New-KitFinding 'FAIL' $Label "следующий номер B-$next не выше наибольшего B-$($max[0]) — следующая запись повторит номер; поднять счётчик за наибольший"
+        New-KitFinding 'FAIL' $Label "следующий номер B-$next не выше наибольшего B-$($max[0]) — поднять счётчик за наибольший"
     }
 }
 
@@ -343,7 +340,7 @@ function Get-KitRootFindings([string]$Base, $Ceilings) {
 function Get-KitDecisionFileFindings([string]$Path, [string]$Label, $Rules) {
     $text = Read-KitMarkdown $Path
     if (-not (Get-KitDecisionReadWhen $text)) {
-        New-KitFinding 'FAIL' $Label 'нет строки «когда:» — файла нет в оглавлении, и его не прочтёт никто'
+        New-KitFinding 'FAIL' $Label 'нет строки «когда:»'
     }
     if (-not $Rules.decision) {
         New-KitFinding 'FAIL' $Label 'потолок не разобран — в раскладке нет строки «Потолок файла решений — N строк.»'
@@ -384,7 +381,7 @@ function Get-KitQuestionFindings([string]$Text, [string]$Label, $Rules) {
         $short = if ($head.Length -gt 60) { $head.Substring(0, 60) + '…' } else { $head }
         $at = "вопрос «$short»"
         if ($Rules.questionKeys[$contextKey] -and -not $q.context.Count) {
-            New-KitFinding 'FAIL' $Label "${at}: нет контекста — абзацы сразу под заголовком, без них оператору не на чем ответить"
+            New-KitFinding 'FAIL' $Label "${at}: нет контекста — абзацы сразу под заголовком"
         }
         foreach ($l in $q.lines) {
             if (-not $l.key) { New-KitFinding 'FAIL' $Label "${at}: строка «$($l.value)» после строк ключей — контекст пишется абзацами сразу под заголовком" }
@@ -400,15 +397,15 @@ function Get-KitQuestionFindings([string]$Text, [string]$Label, $Rules) {
         }
         $options = @($q.lines | Where-Object { $_.key -eq 'вариант' } | ForEach-Object { $_.value })
         if ($options.Count -eq 1) {
-            New-KitFinding 'FAIL' $Label "${at}: один «вариант:» — выбора нет; вариантов два и больше или ни одного"
+            New-KitFinding 'FAIL' $Label "${at}: один «вариант:» — вариантов два и больше или ни одного"
         }
         if (@($options | Group-Object -CaseSensitive | Where-Object { $_.Count -gt 1 }).Count) {
-            New-KitFinding 'FAIL' $Label "${at}: одинаковые «вариант:» — рекомендацию не к чему привязать"
+            New-KitFinding 'FAIL' $Label "${at}: одинаковые «вариант:»"
         }
         # Рекомендация — точное совпадение с вариантом; почему — task-memory.md.
         $recommended = @($q.lines | Where-Object { $_.key -eq 'рекомендовано' })
         if ($recommended.Count -gt 1) { New-KitFinding 'FAIL' $Label "${at}: «рекомендовано:» больше одной" }
-        elseif ($recommended.Count -and -not $options.Count) { New-KitFinding 'FAIL' $Label "${at}: «рекомендовано:» без вариантов — рекомендовать нечего" }
+        elseif ($recommended.Count -and -not $options.Count) { New-KitFinding 'FAIL' $Label "${at}: «рекомендовано:» без вариантов" }
         elseif ($recommended.Count -and -not ($options -ccontains $recommended[0].value)) {
             New-KitFinding 'FAIL' $Label "${at}: «рекомендовано:» не вариант слово в слово — скопировать строку варианта целиком"
         }
@@ -422,7 +419,7 @@ function Get-KitQuestionFindings([string]$Text, [string]$Label, $Rules) {
         }
         $body = (@($head) + @($q.context) + @($q.lines | Where-Object { $_.key -ne 'ответ' } | ForEach-Object { $_.value })) -join ' '
         if ($body -match '(?i)(?<![\p{L}])(выше|ниже)(?![\p{L}])') {
-            New-KitFinding 'WARN' $Label "${at}: ссылка «выше» или «ниже» — оператор опирается только на вопрос и критерии; нужное переписать в контекст"
+            New-KitFinding 'WARN' $Label "${at}: ссылка «выше» или «ниже» — нужное переписать в контекст"
         }
     }
 }
@@ -470,7 +467,7 @@ function Get-KitOwnMemoryFindings([string]$Path, [string]$Label, [string]$Worktr
         return
     }
     if (-not $declared -and -not $SkipIdentity) {
-        New-KitFinding 'FAIL' $Label "нет строки «рабочая копия: $Worktree» — без неё хук память не подаёт"
+        New-KitFinding 'FAIL' $Label "нет строки «рабочая копия: $Worktree»"
     }
 
     foreach ($field in 'ветка', 'Решения') {
@@ -488,7 +485,7 @@ function Get-KitOwnMemoryFindings([string]$Path, [string]$Label, [string]$Worktr
     }
     $count = (Get-KitServedLines $Path).Count
     if ($count -gt $Ceilings.memory) {
-        New-KitFinding 'FAIL' $Label "$count строк при потолке $($Ceilings.memory) — в памяти лежит то, чему место в базе или в истории"
+        New-KitFinding 'FAIL' $Label "$count строк при потолке $($Ceilings.memory) — перечитать по task-memory.md"
     }
 }
 
@@ -502,11 +499,11 @@ function Get-KitForeignMemoryFindings([string]$Base, [string]$Path, [string]$Lab
         return
     }
     if (-not (Test-Path -LiteralPath $declared -PathType Container)) {
-        New-KitFinding 'FAIL' $Label "копии «$declared» нет на диске — задача не закрыта, а вести её некому; не своя, решает оператор"
+        New-KitFinding 'FAIL' $Label "копии «$declared» нет на диске — не своя, решает оператор"
         return
     }
     if ((Get-KitWorkMemoryPath $Base $declared) -ine $Path) {
-        New-KitFinding 'FAIL' $Label 'лежит не по адресу объявленной копии — хук её не подаст; не своя, решает оператор'
+        New-KitFinding 'FAIL' $Label 'лежит не по адресу объявленной копии — не своя, решает оператор'
     }
 }
 
@@ -619,7 +616,7 @@ function Get-KitFlowFindings([string]$Base, [string]$Worktree, $Rules) {
     }
 
     if (-not $steps.Count) {
-        New-KitFinding 'WARN' 'flow.md' 'флоу пуст — /drive не начнёт работу, пока он не написан с оператором'
+        New-KitFinding 'WARN' 'flow.md' 'флоу пуст — написать его с оператором'
         return
     }
 
@@ -648,7 +645,7 @@ function Get-KitFlowFindings([string]$Base, [string]$Worktree, $Rules) {
         if (-not $executor -or $Rules.executors -contains $executor) { continue }
         if ($null -eq $agents) { $agents = Get-KitVisibleAgents $Worktree }
         if (-not $agents.ContainsKey($executor)) {
-            New-KitFinding 'WARN' 'flow.md' "шаг ${n}: субагента «$executor» не видно — может прийти из плагина; нет его — шаг встанет вопросом оператору"
+            New-KitFinding 'WARN' 'flow.md' "шаг ${n}: субагента «$executor» не видно — может прийти из плагина; нет его — вопрос оператору"
         }
     }
 }
@@ -703,7 +700,7 @@ function Get-KitCommitFindings([string]$Base, [string]$Worktree, [string[]]$File
         }
         elseif ($rel -match '^work\\[^\\]+\.md$') {
             if ($own -and $path -ieq $own) { Get-KitOwnMemoryFindings $path $rel $Worktree $rules }
-            else { New-KitFinding 'FAIL' $rel 'память другой рабочей копии в коммите — её коммитит сессия той копии; не своя, решает оператор' }
+            else { New-KitFinding 'FAIL' $rel 'память другой рабочей копии в коммите — не своя, решает оператор' }
         }
         Find-KitSecrets $path $rel
     }

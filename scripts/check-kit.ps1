@@ -498,9 +498,7 @@ try {
     & git -C $repo config --local agents-kit.base $notbase
     Check 'каталог без agents-kit.json — не база' { ExpectText $repo 'ведёт не в базу' }
 
-    # Дальше — не стенд, а сам репозиторий кита: забытый подъём версии молчит везде, кроме
-    # этой проверки. Поставленный маркетплейсом кит обновляется только со сменой номера, и
-    # команда обновления отвечает «всё актуально».
+    # Дальше — не стенд, а сам репозиторий кита.
     $kit = Split-Path $PSScriptRoot -Parent
 
     Check 'версия кита поднята относительно выложенной' {
@@ -525,7 +523,7 @@ try {
         $changed = @($changed | Where-Object { $_ })
         if (-not $changed.Count) { return $null }
 
-        return "дерево разошлось с $upstream, а version прежняя ($declared) — поднять её в .claude-plugin\plugin.json, иначе установленные плагином киты правку не получат"
+        return "дерево разошлось с $upstream, а version прежняя ($declared) — поднять её в .claude-plugin\plugin.json"
     }
 
     Check 'версия объявлена одним адресом — запись маркетплейса её не дублирует' {
@@ -533,7 +531,7 @@ try {
         $named = @($marketplace.plugins |
             Where-Object { $_.PSObject.Properties.Name -contains 'version' } |
             ForEach-Object { $_.name })
-        if ($named.Count) { return "запись маркетплейса объявляет version: $($named -join ', ') — версию несёт только plugin.json, и второе поле разошлось бы с ним молча" }
+        if ($named.Count) { return "запись маркетплейса объявляет version: $($named -join ', ') — версию несёт только plugin.json" }
         return $null
     }
 
