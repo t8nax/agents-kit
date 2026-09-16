@@ -222,6 +222,7 @@ try {
     Check 'связанная копия — путь раскладки в контексте' { ExpectText $repo 'base-layout.md' }
     Check 'связанная копия — путь правил памяти в контексте' { ExpectText $repo 'task-memory.md' }
     Check 'связанная копия — путь правил записи бэклога в контексте' { ExpectText $repo 'backlog-record.md' }
+    Check 'связанная копия — путь глоссария в контексте' { ExpectText $repo 'glossary.md' }
     Check 'связанная копия — отчёт link.ps1 зелёный' { ExpectLinkReport $repo 0 'связь двусторонняя' }
 
     # Строка, которой неоткуда взяться, кроме файла базы.

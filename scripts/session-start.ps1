@@ -196,9 +196,10 @@ try {
             $findings = Read-KitBaseFindings $state.base $state.worktree
             # Память — последней: с неё сессия продолжает работу прямо сейчас.
             $work = Read-KitWorkMemory $state.base $state.worktree
-            # Справки подаются путём: нужны они только пишущей сессии.
+            # Справки подаются путём: правила файлов нужны только пишущей сессии, глоссарий —
+            # только сессии, которой непонятно слово.
             $layoutLine = ''
-            foreach ($ref in @(@('base-layout.md', 'Раскладка базы'), @('task-memory.md', 'Правила памяти задачи'), @('backlog-record.md', 'Правила записи бэклога'))) {
+            foreach ($ref in @(@('base-layout.md', 'Раскладка базы'), @('task-memory.md', 'Правила памяти задачи'), @('backlog-record.md', 'Правила записи бэклога'), @('glossary.md', 'Глоссарий'))) {
                 $refPath = ConvertTo-KitPath (Join-Path $refDir $ref[0])
                 if (Test-Path -LiteralPath $refPath -PathType Leaf) {
                     $layoutLine += "`n- $($ref[1]): ``$refPath``"
