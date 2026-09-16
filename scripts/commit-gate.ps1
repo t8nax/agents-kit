@@ -124,7 +124,7 @@ try {
 
     $state = Get-KitLinkState $cwd
     if ($state.status -ne 'Linked') { exit 0 }
-    $worktree = Get-KitWorktree $cwd
+    $worktree = $state.worktree
 
     $findings = @()
     $dir = ConvertTo-KitPath $cwd

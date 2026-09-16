@@ -17,7 +17,7 @@ try { [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false) } catc
 try {
     . (Join-Path $PSScriptRoot 'base-check.ps1')
 
-    if (-not $Worktree) { $Worktree = Get-KitWorktree (Get-Location).Path }
+    if (-not $Worktree) { $Worktree = Get-KitMemoryRoot (Get-Location).Path }
     $Worktree = ConvertTo-KitPath $Worktree
     $Memory = ConvertTo-KitPath $Memory
 

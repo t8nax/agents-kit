@@ -60,8 +60,8 @@ $($lines -join "`n")
 
 # Память задачи; почему адрес — рабочее дерево — CLAUDE.md. Подаётся и отсутствие файла:
 # адрес нужен сессии, которая память заведёт, а «файла нет» — ответ «в работе ничего».
-function Read-KitWorkMemory([string]$BaseDir, [string]$Dir) {
-    $worktree = Get-KitWorktree $Dir
+function Read-KitWorkMemory([string]$BaseDir, [string]$Worktree) {
+    $worktree = $Worktree
     $path = Get-KitWorkMemoryPath $BaseDir $worktree
     if (-not $path) { return '' }
 
@@ -108,8 +108,8 @@ $text
 
 # Сверка подаётся находками: чистая база не стоит ни строки. Упала сверка — подача базы
 # остаётся: база без сверки лучше, чем сессия без базы.
-function Read-KitBaseFindings([string]$BaseDir, [string]$Dir) {
-    try { $findings = @(Get-KitBaseFindings $BaseDir (Get-KitWorktree $Dir)) } catch { return '' }
+function Read-KitBaseFindings([string]$BaseDir, [string]$Worktree) {
+    try { $findings = @(Get-KitBaseFindings $BaseDir $Worktree) } catch { return '' }
     if (-not $findings.Count) { return '' }
     $lines = $findings | ForEach-Object { "- **$($_.severity)** ``$($_.file)`` — $($_.message)" }
     return @"
@@ -134,9 +134,16 @@ try {
 
     $state = Get-KitLinkState $cwd
 
+    # Ключом связи назван тот каталог, для которого она записана: у связи по подкаталогу
+    # это подсекция, и командой ремонта оператору нужна именно она.
+    $pointerKey = Get-KitPointerKey $state.scope
+    $linkScopeArg = ''
+    if ($state.scope) { $linkScopeArg = ' -Scope Directory' }
+
     switch ($state.status) {
-        # Каталог вне git и репозиторий без указателя: кит молчит целиком —
-        # в чужом проекте от него не должно быть ни строки контекста.
+        # Каталог вне git, а также каталог, для которого базы не объявил ни он сам,
+        # ни его репозиторий: кит молчит целиком — в чужом проекте от него не должно
+        # быть ни строки контекста.
         'NotGit' { exit 0 }
         'NoPointer' { exit 0 }
 
@@ -146,7 +153,7 @@ try {
 
 Рабочая копия ``$($state.workspace)`` объявляет базой ``$($state.base)``, но такого каталога нет.
 
-**Работа со знанием остановлена:** другая база не подставляется, знание не пишется никуда. Чинит оператор — вернуть каталог базы или переставить указатель: ``git config --local agents-kit.base <путь>``.
+**Работа со знанием остановлена:** другая база не подставляется, знание не пишется никуда. Чинит оператор — вернуть каталог базы или переставить указатель: ``git config --local $pointerKey <путь>``.
 "@
         }
 
@@ -166,7 +173,7 @@ try {
 
 Указатель ведёт в базу ``$($state.base)``, но она не числит ``$($state.workspace)``. Так выглядит каталог, скопированный вместе с ``.git``: он писал бы знание в чужую базу.
 
-**Работа со знанием остановлена.** Решает оператор: копия законная — ``link.ps1 -Base "$($state.base)"``; случайная — ``git config --local --unset agents-kit.base``.
+**Работа со знанием остановлена.** Решает оператор: копия законная — ``link.ps1$linkScopeArg -Base "$($state.base)"``; случайная — ``git config --local --unset $pointerKey``.
 "@
         }
 
@@ -179,9 +186,9 @@ try {
             }
             $knowledge = Read-KitBaseKnowledge $state.base
             $decisions = Read-KitDecisionIndex $state.base
-            $findings = Read-KitBaseFindings $state.base $cwd
+            $findings = Read-KitBaseFindings $state.base $state.worktree
             # Память — последней: с неё сессия продолжает работу прямо сейчас.
-            $work = Read-KitWorkMemory $state.base $cwd
+            $work = Read-KitWorkMemory $state.base $state.worktree
             # Справки подаются путём: нужны они только пишущей сессии. Путь считается при
             # запуске и в файлы кита не попадает.
             $layoutLine = ''
@@ -194,11 +201,15 @@ try {
             $nameLine = ''
             $name = Get-KitProjectName $state.base
             if ($name) { $nameLine = "- Проект: $name`n" }
+            # Связан подкаталог — репозиторий назван отдельной строкой: под китом часть
+            # его, и сессия не должна считать своим всё дерево.
+            $repoLine = ''
+            if ($state.scope) { $repoLine = "`n- Репозиторий: ``$($state.repo)`` — под китом только каталог выше" }
             Emit @"
 # agents-kit — проект под китом
 
 $nameLine- База знаний: ``$($state.base)``
-- Рабочая копия: ``$($state.workspace)``$layoutLine
+- Рабочая копия: ``$($state.workspace)``$repoLine$layoutLine
 
 Знание проекта живёт только в базе. Ниже — инварианты кита, они действуют всегда.
 

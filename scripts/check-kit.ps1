@@ -134,6 +134,14 @@ $base    = Join-Path $root 'base'
 $moved   = Join-Path $root 'base-moved'
 $notbase = Join-Path $root 'notbase'
 $inrepo  = Join-Path $repo 'knowledge'
+$mono    = Join-Path $root 'mono'
+$monoWt  = Join-Path $root 'mono-wt'
+$modFoo  = Join-Path $mono 'packages\foo'
+$modBar  = Join-Path $mono 'packages\bar'
+$modSrc  = Join-Path $modFoo 'src'
+$modCase = Join-Path $mono 'Mixed\Case'
+$baseFoo = Join-Path $root 'base-foo'
+$baseBar = Join-Path $root 'base-bar'
 
 try {
     New-Item -ItemType Directory -Force -Path $plain, $notbase | Out-Null
@@ -390,6 +398,68 @@ try {
         return $null
     }
 
+    # Связь по каталогу: под китом модуль монорепы, остальное дерево — нет.
+    New-TestRepo $mono
+    New-Item -ItemType Directory -Force -Path $modFoo, $modBar, $modSrc, $modCase | Out-Null
+    foreach ($dir in $modFoo, $modBar, $modSrc, $modCase) {
+        Set-Content -LiteralPath (Join-Path $dir '.keep') -Value 'x'
+    }
+    & git -C $mono add -A 2>$null
+    & git -C $mono commit -qm modules | Out-Null
+    Invoke-BaseInit $baseFoo | Out-Null
+    Invoke-BaseInit $baseBar | Out-Null
+    & pwsh -NoProfile -File $link -Path $modFoo -Base $baseFoo -Scope Directory | Out-Null
+
+    Check 'связанный каталог монорепы — база подана' { ExpectText $modFoo $baseFoo }
+    Check 'корень монорепы — хук молчит' { ExpectSilent $mono }
+    Check 'несвязанный каталог монорепы — хук молчит' { ExpectSilent $modBar }
+    Check 'подкаталог связанного — база та же' { ExpectText $modSrc $baseFoo }
+
+    # В списке копий — каталог, для которого записан указатель, а не корень репозитория.
+    Check 'связь по каталогу — база числит каталог, а не репозиторий' {
+        $m = Get-Content -LiteralPath (Join-Path $baseFoo 'agents-kit.json') -Raw | ConvertFrom-Json
+        $ws = @($m.workspaces)
+        if ($ws.Count -ne 1) { return "копий в списке $($ws.Count), ожидалась одна" }
+        if ($ws[0] -ine $modFoo) { return "числится «$($ws[0])», ожидался «$modFoo»" }
+        return $null
+    }
+
+    & pwsh -NoProfile -File $link -Path $modBar -Base $baseBar -Scope Directory | Out-Null
+    Check 'два каталога одного репозитория — каждый со своей базой' {
+        $problem = ExpectText $modFoo $baseFoo
+        if ($problem) { return $problem }
+        $problem = ExpectText $modBar $baseBar
+        if ($problem) { return $problem }
+        return ExpectNoText $modBar $baseFoo
+    }
+
+    & pwsh -NoProfile -File $link -Path $modSrc -Base $baseBar -Scope Directory | Out-Null
+    Check 'вложенный каталог со своей базой — выигрывает ближайший' {
+        $problem = ExpectText $modSrc $baseBar
+        if ($problem) { return $problem }
+        return ExpectText $modFoo $baseFoo
+    }
+
+    # Каталоги Windows регистра не различают, а подсекции git различают.
+    & pwsh -NoProfile -File $link -Path (Join-Path $mono 'MIXED\CASE') -Base $baseBar -Scope Directory | Out-Null
+    Check 'каталог связан в другом регистре — база находится' { ExpectText $modCase $baseBar }
+
+    & git -C $mono worktree add -q $monoWt -b monowt 2>$null
+    Check 'связанный каталог в worktree — база та же, память своя' {
+        $wtFoo = Join-Path $monoWt 'packages\foo'
+        $problem = ExpectText $wtFoo $baseFoo
+        if ($problem) { return $problem }
+        $memMain = Get-HookMemoryPath $modFoo
+        $memWt = Get-HookMemoryPath $wtFoo
+        if (-not $memWt) { return 'хук не назвал адрес памяти' }
+        if ($memWt -ieq $memMain) { return 'адрес тот же, что у основной копии' }
+        return $null
+    }
+
+    Check 'отчёт link.ps1 в корне монорепы — называет связанные каталоги' {
+        ExpectLinkReport $mono 0 'packages/foo'
+    }
+
     Move-Item -LiteralPath $base -Destination $moved
     Check 'база переименована — указатель разорван' { ExpectText $repo 'указатель разорван' }
     Move-Item -LiteralPath $moved -Destination $base
@@ -407,6 +477,7 @@ finally {
     else {
         # worktree держит служебные файлы в основном репозитории — сначала он.
         try { & git -C $repo worktree remove --force $wt 2>$null } catch { }
+        try { & git -C $mono worktree remove --force $monoWt 2>$null } catch { }
         try { Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction Stop }
         catch { Write-Host "Не удалось убрать $root — удалить руками" -ForegroundColor Yellow }
     }

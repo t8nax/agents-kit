@@ -239,7 +239,7 @@ function Get-KitLinkFindings([string]$Base) {
             New-KitFinding 'FAIL' 'agents-kit.json' "«$ws» не git-репозиторий — запись висит"
         }
         elseif ($state.workspace -ine $ws) {
-            New-KitFinding 'FAIL' 'agents-kit.json' "«$ws» — не основная копия, а часть «$($state.workspace)»: worktree и подкаталоги в список не пишутся"
+            New-KitFinding 'FAIL' 'agents-kit.json' "«$ws» — не рабочая копия, а часть «$($state.workspace)»: в список идёт каталог, для которого записан указатель, и worktree в него не пишется"
         }
         elseif ($state.status -eq 'NoPointer') {
             New-KitFinding 'FAIL' 'agents-kit.json' "у копии «$ws» указатель снят — запись висит: связать заново link.ps1 или убрать запись"
