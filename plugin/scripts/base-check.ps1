@@ -539,46 +539,6 @@ function Get-KitVisibleAgents([string]$Worktree) {
     return $names
 }
 
-# Форма пунктов описания шага нужна глазу, а не проходу шага: нарушение — WARN.
-function Get-KitFlowBodyFindings($Step) {
-    $n = $Step.number
-    $previous = $null
-    $outside = $false
-    foreach ($line in $Step.body) {
-        $item = [regex]::Match($line, '^\s*(\d+(?:\.\d+)+)\.\s+\S')
-        if (-not $item.Success) {
-            if ($null -eq $previous -or $line -notmatch '^\s') { $outside = $true }
-            continue
-        }
-        $label = $item.Groups[1].Value
-        $segments = @($label.Split('.') | ForEach-Object { [int]$_ })
-        if ($segments[0] -ne $n) {
-            New-KitFinding 'WARN' 'flow.md' "шаг ${n}: пункт «$label» не начинается с номера шага"
-            continue
-        }
-        $path = @($segments | Select-Object -Skip 1)
-
-        $valid = $false
-        if ($null -eq $previous) { $valid = ($path.Count -eq 1 -and $path[0] -eq 1) }
-        elseif ($path.Count -eq $previous.Count + 1) {
-            $valid = ($path[-1] -eq 1) -and ((($path | Select-Object -SkipLast 1) -join '.') -eq ($previous -join '.'))
-        }
-        elseif ($path.Count -le $previous.Count) {
-            $d = $path.Count
-            $prefix = if ($d -gt 1) { ($path[0..($d - 2)] -join '.') -eq ($previous[0..($d - 2)] -join '.') } else { $true }
-            $valid = $prefix -and $path[$d - 1] -eq $previous[$d - 1] + 1
-        }
-        if (-not $valid) {
-            $after = if ($null -eq $previous) { 'начала описания' } else { "«$n.$($previous -join '.')»" }
-            New-KitFinding 'WARN' 'flow.md' "шаг ${n}: пункт «$label» после $after — номера подряд с 1, вложенный начинается с .1"
-        }
-        $previous = $path
-    }
-    if ($outside) {
-        New-KitFinding 'WARN' 'flow.md' "шаг ${n}: строка вне пункта — описание пишется пунктами $n.1, $n.2; проза — с отступом под пунктом"
-    }
-}
-
 # Флоу: то, что не даст пройти шаг однозначно, — нет обязательного ключа, чужой ключ,
 # невидимый исполнитель, сбитый порядок. Длину флоу сверка не проверяет; отсутствие
 # файла назвала сверка каркаса.
@@ -596,7 +556,7 @@ function Get-KitFlowFindings([string]$Base, [string]$Worktree, $Rules) {
     foreach ($line in ((Read-KitMarkdown $path) -split '\r?\n')) {
         $heading = [regex]::Match($line, '^##\s+(\d+)\.\s+(.+?)\s*$')
         if ($heading.Success) {
-            $current = @{ number = [int]$heading.Groups[1].Value; keys = [ordered]@{}; body = [System.Collections.Generic.List[string]]::new() }
+            $current = @{ number = [int]$heading.Groups[1].Value; keys = [ordered]@{} }
             $steps += $current
             $inKeys = $true
             continue
@@ -611,7 +571,6 @@ function Get-KitFlowFindings([string]$Base, [string]$Worktree, $Rules) {
             if ($pair.Success) { $current.keys[$pair.Groups[1].Value] = $pair.Groups[2].Value; continue }
         }
         $inKeys = $false
-        $current.body.Add($line)
     }
 
     if (-not $steps.Count) {
@@ -627,7 +586,6 @@ function Get-KitFlowFindings([string]$Base, [string]$Worktree, $Rules) {
             New-KitFinding 'WARN' 'flow.md' "шаг $n после шага $previous — порядок исполнения — порядок номеров"
         }
         $previous = $n
-        Get-KitFlowBodyFindings $step
 
         foreach ($key in $step.keys.Keys) {
             if (-not $Rules.flowKeys.Contains($key)) {
