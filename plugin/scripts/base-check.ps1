@@ -642,9 +642,15 @@ function Get-KitVisibleAgents([string]$Worktree) {
     return $names
 }
 
+# Название шага как адрес ссылки: пробелы и регистр адреса не меняют.
+function ConvertTo-KitStepName([string]$Name) {
+    return ([regex]::Replace($Name, '\s+', ' ')).Trim().ToLowerInvariant()
+}
+
 # Флоу: то, что не даст пройти шаг однозначно, — нет обязательного ключа, чужой ключ,
-# невидимый исполнитель, сбитый порядок. Длину флоу сверка не проверяет; отсутствие
-# файла назвала сверка каркаса.
+# невидимый исполнитель, сбитый порядок, ссылка с шага на шаг номером или на название,
+# которого во флоу нет, два шага с одним названием. Длину флоу сверка не проверяет;
+# отсутствие файла назвала сверка каркаса.
 function Get-KitFlowFindings([string]$Base, [string]$Worktree, $Rules) {
     $path = Join-Path $Base 'flow.md'
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return }
@@ -659,7 +665,12 @@ function Get-KitFlowFindings([string]$Base, [string]$Worktree, $Rules) {
     foreach ($line in ((Read-KitMarkdown $path) -split '\r?\n')) {
         $heading = [regex]::Match($line, '^##\s+(\d+)\.\s+(.+?)\s*$')
         if ($heading.Success) {
-            $current = @{ number = [int]$heading.Groups[1].Value; keys = [ordered]@{} }
+            $current = @{
+                number = [int]$heading.Groups[1].Value
+                name = $heading.Groups[2].Value
+                keys = [ordered]@{}
+                body = [System.Collections.Generic.List[string]]::new()
+            }
             $steps += $current
             $inKeys = $true
             continue
@@ -674,11 +685,24 @@ function Get-KitFlowFindings([string]$Base, [string]$Worktree, $Rules) {
             if ($pair.Success) { $current.keys[$pair.Groups[1].Value] = $pair.Groups[2].Value; continue }
         }
         $inKeys = $false
+        $current.body.Add($line)
     }
 
     if (-not $steps.Count) {
         New-KitFinding 'WARN' 'flow.md' 'флоу пуст — написать его с оператором'
         return
+    }
+
+    # Адрес шага — название: номер съезжает вслед за перестановкой шагов, а описание
+    # остаётся связным и ведёт в чужой шаг молча. Отсюда и запрет одинаковых названий.
+    $names = @{}
+    foreach ($step in $steps) {
+        $key = ConvertTo-KitStepName $step.name
+        if ($names.ContainsKey($key)) {
+            New-KitFinding 'FAIL' 'flow.md' "шаг $($step.number): название «$($step.name)» уже у шага $($names[$key]) — ссылка на такой шаг неоднозначна"
+            continue
+        }
+        $names[$key] = $step.number
     }
 
     $agents = $null
@@ -699,6 +723,18 @@ function Get-KitFlowFindings([string]$Base, [string]$Worktree, $Rules) {
             if (-not $Rules.flowKeys[$key]) { continue }
             if (-not $step.keys.Contains($key)) { New-KitFinding 'FAIL' 'flow.md' "шаг ${n}: нет ключа «$key»" }
             elseif (-not $step.keys[$key]) { New-KitFinding 'FAIL' 'flow.md' "шаг ${n}: ключ «$key» пуст" }
+        }
+
+        foreach ($line in $step.body) {
+            foreach ($ref in [regex]::Matches($line, '(?i)\bшаг[а-яё]*\s+(\d+)')) {
+                New-KitFinding 'FAIL' 'flow.md' "шаг ${n}: ссылка «$($ref.Value)» — на шаг ссылаются названием в кавычках"
+            }
+            foreach ($ref in [regex]::Matches($line, '(?i)\bшаг[а-яё]*\s+«([^»]+)»')) {
+                $name = $ref.Groups[1].Value
+                if (-not $names.ContainsKey((ConvertTo-KitStepName $name))) {
+                    New-KitFinding 'FAIL' 'flow.md' "шаг ${n}: ссылка на шаг «$name» — такого шага во флоу нет"
+                }
+            }
         }
 
         $executor = $step.keys['исполнитель']
