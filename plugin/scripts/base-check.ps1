@@ -135,7 +135,7 @@ function Read-KitReference([string]$Name) {
 # Потолки и ключи из справок кита. Несошедшийся разбор не молчит: файл без разобранного
 # правила даёт FAIL, а не проходит непроверенным.
 function Get-KitLayoutRules {
-    $result = @{ files = @{}; memory = $null; decision = $null; flowKeys = [ordered]@{}; executors = @(); questionKeys = [ordered]@{} }
+    $result = @{ files = @{}; memory = $null; decision = $null; flowKeys = [ordered]@{}; executors = @(); questionKeys = [ordered]@{}; backlogFields = [ordered]@{} }
 
     # Таблица ключей — единственная в своём разделе с колонкой «да/нет».
     $memoryText = Read-KitReference 'task-memory.md'
@@ -144,6 +144,11 @@ function Get-KitLayoutRules {
     }
     $memory = [regex]::Match($memoryText, '(?m)^Потолок файла — (\d+) строк\.')
     if ($memory.Success) { $result.memory = [int]$memory.Groups[1].Value }
+
+    $backlogText = Get-KitLayoutSection (Read-KitReference 'backlog-record.md') '## Поля'
+    foreach ($row in [regex]::Matches($backlogText, '(?m)^\|\s*`([^`]+)`\s*\|\s*(.*?)\s*\|\s*$')) {
+        $result.backlogFields[$row.Groups[1].Value] = @([regex]::Matches($row.Groups[2].Value, '`([^`<>]+)`') | ForEach-Object { $_.Groups[1].Value })
+    }
 
     $text = Read-KitReference 'base-layout.md'
     $flowText = Get-KitLayoutSection $text '## Флоу проекта'
@@ -286,21 +291,93 @@ function Get-KitKnowledgeCeilingFindings([string]$Path, [string]$Label, $Ceiling
     }
 }
 
+# Поля записи объявлены строкой «поля:» шапки; без неё запись их не несёт. Ключом считается
+# только имя из перечня справки: текст оператору тоже начинается со слова и двоеточия, и всякая
+# пара «слово: слово» ушла бы в находки. Своё имя в «поля:», пустое значение и значение вне
+# перечня — FAIL; нехватку объявленного поля проставит показ бэклога, невключённое поле решает
+# оператор — WARN.
+function Get-KitBacklogFieldFindings([string]$Label, [string]$Head, $Entries, $Rules) {
+    $declared = [regex]::Match($Head, '(?im)^\s*поля\s*:\s*(.+?)\s*$')
+    if ($declared.Success -and -not $Rules.backlogFields.Count) {
+        New-KitFinding 'FAIL' $Label 'перечень полей записи не разобран — таблица в разделе «Поля» правил записи бэклога'
+        return
+    }
+
+    $fields = @()
+    if ($declared.Success) {
+        foreach ($name in ($declared.Groups[1].Value -split ',')) {
+            $name = $name.Trim()
+            if (-not $name) { continue }
+            if ($Rules.backlogFields.Contains($name)) { $fields += $name; continue }
+            New-KitFinding 'FAIL' $Label "«поля:» называет «$name» — такого поля нет, своих не заводят"
+        }
+    }
+
+    foreach ($entry in $Entries) {
+        foreach ($name in $fields) {
+            if (-not $entry.keys.Contains($name)) {
+                New-KitFinding 'WARN' $Label "$($entry.label): нет поля «$name» — проставит /backlog"
+                continue
+            }
+            $value = $entry.keys[$name]
+            if (-not $value) {
+                New-KitFinding 'FAIL' $Label "$($entry.label): поле «$name» пусто"
+                continue
+            }
+            if ($Rules.backlogFields[$name] -notcontains $value) {
+                New-KitFinding 'FAIL' $Label "$($entry.label): «$name : $value» вне перечня — $($Rules.backlogFields[$name] -join ' · ')"
+            }
+        }
+        foreach ($key in $entry.keys.Keys) {
+            if ($fields -notcontains $key) {
+                New-KitFinding 'WARN' $Label "$($entry.label): поле «$key» не объявлено строкой «поля:» шапки"
+            }
+        }
+    }
+}
+
 # Номер записи бэклога выдаёт счётчик в шапке файла: из оставшихся записей номер не вычислить,
 # по истории git тоже — она не видит незакоммиченных записей соседней копии. Запись — заголовок
-# «##». Повтор номера и счётчик не выше наибольшего — FAIL; запись без номера и файл без
-# счётчика чинит /backlog — WARN.
-function Get-KitBacklogFindings([string]$Path, [string]$Label) {
+# «##», под ним подряд пары «ключ: значение». Повтор номера и счётчик не выше наибольшего — FAIL;
+# запись без номера и файл без счётчика чинит /backlog — WARN.
+function Get-KitBacklogFindings([string]$Path, [string]$Label, $Rules) {
     $text = Read-KitMarkdown $Path
     $numbers = @{}
     $unnumbered = 0
+    $entries = @()
+    $head = [System.Collections.Generic.List[string]]::new()
+    $current = $null
+    $inKeys = $false
     foreach ($line in ($text -split '\r?\n')) {
-        if ($line -notmatch '^##\s') { continue }
-        $m = [regex]::Match($line, '^##\s+B-(\d+)\b')
-        if (-not $m.Success) { $unnumbered++; continue }
-        $n = [int]$m.Groups[1].Value
-        $numbers[$n] = 1 + [int]$numbers[$n]
+        if ($line -match '^##\s') {
+            $m = [regex]::Match($line, '^##\s+B-(\d+)\b')
+            if ($m.Success) {
+                $n = [int]$m.Groups[1].Value
+                $numbers[$n] = 1 + [int]$numbers[$n]
+                $current = @{ label = "B-$n"; keys = [ordered]@{} }
+            }
+            else {
+                $unnumbered++
+                $current = @{ label = ($line -replace '^#+\s*', ''); keys = [ordered]@{} }
+            }
+            $entries += $current
+            $inKeys = $true
+            continue
+        }
+        if (-not $current) { $head.Add($line); continue }
+        if (-not $inKeys) { continue }
+        if (-not $line.Trim()) {
+            if ($current.keys.Count) { $inKeys = $false }
+            continue
+        }
+        $pair = [regex]::Match($line, '^([^\s:][^:]*?)\s*:\s*(.*?)\s*$')
+        if ($pair.Success -and $Rules.backlogFields.Contains($pair.Groups[1].Value)) {
+            $current.keys[$pair.Groups[1].Value] = $pair.Groups[2].Value
+            continue
+        }
+        $inKeys = $false
     }
+
     foreach ($n in @($numbers.Keys | Where-Object { $numbers[$_] -gt 1 } | Sort-Object)) {
         New-KitFinding 'FAIL' $Label "номер B-$n у $($numbers[$n]) записей — одной из записей выдать новый через счётчик"
     }
@@ -311,16 +388,19 @@ function Get-KitBacklogFindings([string]$Path, [string]$Label) {
     $counter = [regex]::Match($text, '(?im)^\s*следующий\s+номер\s*:\s*B-(\d+)\s*$')
     if (-not $counter.Success) {
         New-KitFinding 'WARN' $Label 'нет строки «следующий номер: B-N» — поставит /backlog'
-        return
     }
-    $next = [int]$counter.Groups[1].Value
-    $max = @($numbers.Keys | Sort-Object -Descending | Select-Object -First 1)
-    if ($max.Count -and $next -le $max[0]) {
-        New-KitFinding 'FAIL' $Label "следующий номер B-$next не выше наибольшего B-$($max[0]) — поднять счётчик за наибольший"
+    else {
+        $next = [int]$counter.Groups[1].Value
+        $max = @($numbers.Keys | Sort-Object -Descending | Select-Object -First 1)
+        if ($max.Count -and $next -le $max[0]) {
+            New-KitFinding 'FAIL' $Label "следующий номер B-$next не выше наибольшего B-$($max[0]) — поднять счётчик за наибольший"
+        }
     }
+
+    Get-KitBacklogFieldFindings $Label ($head -join "`n") $entries $Rules
 }
 
-# Файлы корня: каркас на месте, подаваемые в потолке, номера бэклога сходятся со счётчиком.
+# Файлы корня: каркас на месте, подаваемые в потолке, бэклог сходится со счётчиком и перечнем полей.
 # О файлах сверх каркаса сверка молчит.
 function Get-KitRootFindings([string]$Base, $Ceilings) {
     foreach ($name in Get-KitTemplateNames) {
@@ -332,7 +412,7 @@ function Get-KitRootFindings([string]$Base, $Ceilings) {
         if ($script:KitServedFiles -contains $file.Name) {
             Get-KitKnowledgeCeilingFindings $file.FullName $file.Name $Ceilings
         }
-        elseif ($file.Name -ieq 'backlog.md') { Get-KitBacklogFindings $file.FullName $file.Name }
+        elseif ($file.Name -ieq 'backlog.md') { Get-KitBacklogFindings $file.FullName $file.Name $Ceilings }
     }
 }
 
@@ -650,7 +730,7 @@ function Get-KitCommitFindings([string]$Base, [string]$Worktree, [string[]]$File
         if ($rel -notmatch '\\' -and $rel -match '\.md$') {
             if ($script:KitServedFiles -contains $rel) { Get-KitKnowledgeCeilingFindings $path $rel $rules }
             elseif ($rel -ieq 'flow.md') { Get-KitFlowFindings $Base $Worktree $rules }
-            elseif ($rel -ieq 'backlog.md') { Get-KitBacklogFindings $path $rel }
+            elseif ($rel -ieq 'backlog.md') { Get-KitBacklogFindings $path $rel $rules }
         }
         elseif ($rel -match "^$($script:KitDecisionsDir)\\[^\\]+\.md$") {
             Get-KitDecisionFileFindings $path $rel $rules
