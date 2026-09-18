@@ -7,7 +7,7 @@
 # WARN — перечитать и решить, kind = secret — подозрение на секрет для оператора.
 #
 #   Get-KitBaseFindings    база целиком — то, что расходится само, без коммита
-#   Get-KitCommitFindings  файлы коммита и local/ — то, что уедет в историю
+#   Get-KitCommitFindings  файлы коммита, local/ и бэклог — то, что уедет в историю
 
 . (Join-Path $PSScriptRoot 'link-state.ps1')
 
@@ -568,7 +568,7 @@ function Get-KitOwnMemoryFindings([string]$Path, [string]$Label, [string]$Worktr
     }
 }
 
-# О живой соседней работе сверка молчит; называет только файл, который не подаст никто:
+# О ходе живой соседней работы сверка молчит; называет только файл, который не подаст никто:
 # копии нет, адрес не сходится или файл не опознаётся, — иначе work/ молча стал бы архивом
 # брошенных задач. Содержимое не подаётся никогда.
 function Get-KitForeignMemoryFindings([string]$Base, [string]$Path, [string]$Label) {
@@ -586,6 +586,28 @@ function Get-KitForeignMemoryFindings([string]$Base, [string]$Path, [string]$Lab
     }
 }
 
+# Запись остаётся в бэклоге, когда при взятии пропущен порядок «сначала вырезать, потом завести
+# память»: занятость отмечает только файл памяти, и из соседней копии взятая задача по-прежнему
+# видна невзятой записью. Направление проверки одно — вырез идёт до памяти, поэтому живая память
+# при живой записи всегда нарушение, а не гонка двух копий на середине взятия. Бэклог читается
+# с диска: вырез уезжает и отдельным коммитом. Чинится расхождение в бэклоге — его находка
+# и называет; у чужой памяти читается только номер в заголовке. Своя она или чужая — по
+# объявленной копии, как и везде: по адресу лежит и файл, положенный руками.
+function Get-KitTakenRecordFindings([string]$Base, [string]$Path, [string]$Label, [string]$Worktree) {
+    $text = Read-KitMarkdown $Path
+    $number = [regex]::Match($text, '(?m)^#\s+B-(\d+)\b')
+    if (-not $number.Success) { return }
+    $n = [int]$number.Groups[1].Value
+
+    $backlog = Join-Path $Base 'backlog.md'
+    if (-not (Test-Path -LiteralPath $backlog -PathType Leaf)) { return }
+    if ((Read-KitMarkdown $backlog) -notmatch "(?m)^##\s+B-$n\b") { return }
+
+    $declared = Get-KitDeclaredWorktree $text
+    $fix = if ($declared -and $declared -ieq $Worktree) { 'вырезать запись' } else { 'не своя, решает оператор' }
+    New-KitFinding 'FAIL' 'backlog.md' "запись B-$n взята — память «$Label» живёт, а запись осталась: $fix"
+}
+
 function Get-KitWorkFindings([string]$Base, [string]$Worktree, $Ceilings) {
     $work = Join-Path $Base 'work'
     if (-not (Test-Path -LiteralPath $work -PathType Container)) { return }
@@ -599,6 +621,7 @@ function Get-KitWorkFindings([string]$Base, [string]$Worktree, $Ceilings) {
         $path = ConvertTo-KitPath $item.FullName
         if ($own -and $path -ieq $own) { Get-KitOwnMemoryFindings $path $label $Worktree $Ceilings -SkipIdentity }
         else { Get-KitForeignMemoryFindings $Base $path $label }
+        Get-KitTakenRecordFindings $Base $path $label $Worktree
     }
 }
 
@@ -736,7 +759,12 @@ function Get-KitCommitFindings([string]$Base, [string]$Worktree, [string[]]$File
             Get-KitDecisionFileFindings $path $rel $rules
         }
         elseif ($rel -match '^work\\[^\\]+\.md$') {
-            if ($own -and $path -ieq $own) { Get-KitOwnMemoryFindings $path $rel $Worktree $rules }
+            # Взятая запись ловится со стороны своей памяти: это коммит взятия. Со стороны
+            # бэклога её не ищут — вырезать чужую запись коммит бэклога всё равно не может.
+            if ($own -and $path -ieq $own) {
+                Get-KitOwnMemoryFindings $path $rel $Worktree $rules
+                Get-KitTakenRecordFindings $Base $path $rel $Worktree
+            }
             else { New-KitFinding 'FAIL' $rel 'память другой рабочей копии в коммите — не своя, решает оператор' }
         }
         Find-KitSecrets $path $rel
