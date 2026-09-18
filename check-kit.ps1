@@ -15,6 +15,7 @@ $scripts = Join-Path $PSScriptRoot 'plugin\scripts'
 $hook = Join-Path $scripts 'session-start.ps1'
 $link = Join-Path $scripts 'link.ps1'
 $init = Join-Path $scripts 'base-init.ps1'
+$script:remove = Join-Path $scripts 'worktree-remove.ps1'
 $script:await = Join-Path $scripts 'await-answer.ps1'
 $root = Join-Path ([System.IO.Path]::GetTempPath()) ("agents-kit-check-" + [guid]::NewGuid().ToString('N').Substring(0, 8))
 
@@ -112,6 +113,11 @@ function Wait-AwaitAnswer($Process, [int]$Seconds) {
     return $Process.StandardOutput.ReadToEnd().Trim()
 }
 
+function Invoke-WorktreeRemove([string]$Dir) {
+    $out = & pwsh -NoProfile -File $script:remove -Path $Dir 2>&1
+    return [pscustomobject]@{ code = $LASTEXITCODE; text = ($out -join "`n") }
+}
+
 function Invoke-BaseInit([string]$Dir) {
     $out = & pwsh -NoProfile -File $init -Path $Dir 2>&1
     return [pscustomobject]@{ code = $LASTEXITCODE; text = ($out -join "`n") }
@@ -162,6 +168,7 @@ $plain   = Join-Path $root 'plain'
 $repo    = Join-Path $root 'repo'
 $copy    = Join-Path $root 'repo-copy'
 $wt      = Join-Path $root 'wt'
+$gone    = Join-Path $root 'gone'
 $base    = Join-Path $root 'base'
 $moved   = Join-Path $root 'base-moved'
 $notbase = Join-Path $root 'notbase'
@@ -384,6 +391,60 @@ try {
         $after = Get-HookMemoryPath $wt
         if ($after -ine $script:memWt) { return "адрес уехал: $after" }
         return ExpectText $wt 'работа отдельного worktree'
+    }
+
+    # Удаление копии проверяется отказами: каталог уходит с диска насовсем, и безвозвратно с ним
+    # уходит только то, чего нет ни в базе, ни в ветке.
+    & git -C $repo worktree add -q $gone -b gone 2>$null
+
+    Check 'удаление — основная копия остаётся' {
+        $r = Invoke-WorktreeRemove $repo
+        if ($r.code -eq 0) { return 'скрипт не отказал' }
+        if ($r.text -notmatch 'основная копия') { return "отказ не про основную копию: $($r.text)" }
+        if (-not (Test-Path -LiteralPath $repo)) { return 'основная копия всё-таки удалена' }
+        return $null
+    }
+
+    # Дочерний pwsh наследует каталог родителя — так проверяется отказ по месту запуска.
+    Check 'удаление — запуск изнутри копии не удаляет её' {
+        Push-Location -LiteralPath $gone
+        try { $r = Invoke-WorktreeRemove $gone } finally { Pop-Location }
+        if ($r.code -eq 0) { return 'скрипт не отказал' }
+        if ($r.text -notmatch 'запущен внутри') { return "отказ не про место запуска: $($r.text)" }
+        if (-not (Test-Path -LiteralPath $gone)) { return 'копия всё-таки удалена' }
+        return $null
+    }
+
+    Check 'удаление — живая память держит копию' {
+        $memory = Get-HookMemoryPath $gone
+        if (-not $memory) { return 'хук не назвал адрес памяти' }
+        Set-KitMemory $memory $gone 'работа удаляемой копии'
+        $r = Invoke-WorktreeRemove $gone
+        Remove-Item -LiteralPath $memory -Force
+        if ($r.code -eq 0) { return 'скрипт не отказал' }
+        if ($r.text -notmatch [regex]::Escape($memory)) { return "в отказе не назван файл памяти: $($r.text)" }
+        if (-not (Test-Path -LiteralPath $gone)) { return 'копия всё-таки удалена' }
+        return $null
+    }
+
+    Check 'удаление — незакоммиченное держит копию' {
+        $draft = Join-Path $gone 'draft.txt'
+        Set-Content -LiteralPath $draft -Value 'не закоммичено'
+        $r = Invoke-WorktreeRemove $gone
+        Remove-Item -LiteralPath $draft -Force
+        if ($r.code -eq 0) { return 'скрипт не отказал' }
+        if ($r.text -notmatch 'draft\.txt') { return "в отказе не назван файл: $($r.text)" }
+        if (-not (Test-Path -LiteralPath $gone)) { return 'копия всё-таки удалена' }
+        return $null
+    }
+
+    Check 'удаление — чистая копия уходит, ветка остаётся' {
+        $r = Invoke-WorktreeRemove $gone
+        if ($r.code -ne 0) { return "код возврата $($r.code): $($r.text)" }
+        if (Test-Path -LiteralPath $gone) { return 'каталог копии на месте' }
+        & git -C $repo show-ref --verify --quiet 'refs/heads/gone' 2>$null
+        if ($LASTEXITCODE -ne 0) { return 'ветка ушла вместе с копией' }
+        return $null
     }
 
     # Ожидание держит, пока ответа нет, и выходит строкой на каждом конечном состоянии.
