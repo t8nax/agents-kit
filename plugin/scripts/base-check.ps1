@@ -626,7 +626,7 @@ function Get-KitWorkFindings([string]$Base, [string]$Worktree, $Ceilings) {
 }
 
 # Субагенты рабочей копии и пользователя. Субагенты плагинов не видны, поэтому
-# ненайденный исполнитель — WARN.
+# ненайденный исполнитель или помощник — WARN.
 function Get-KitVisibleAgents([string]$Worktree) {
     $names = @{}
     $dirs = @((Join-Path $HOME '.claude\agents'))
@@ -648,9 +648,9 @@ function ConvertTo-KitStepName([string]$Name) {
 }
 
 # Флоу: то, что не даст пройти шаг однозначно, — нет обязательного ключа, чужой ключ,
-# невидимый исполнитель, сбитый порядок, ссылка с шага на шаг номером или на название,
-# которого во флоу нет, два шага с одним названием. Длину флоу сверка не проверяет;
-# отсутствие файла назвала сверка каркаса.
+# невидимый исполнитель или помощник, помощники не у оркестратора, сбитый порядок, ссылка
+# с шага на шаг номером или на название, которого во флоу нет, два шага с одним названием.
+# Длину флоу сверка не проверяет; отсутствие файла назвала сверка каркаса.
 function Get-KitFlowFindings([string]$Base, [string]$Worktree, $Rules) {
     $path = Join-Path $Base 'flow.md'
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return }
@@ -737,7 +737,20 @@ function Get-KitFlowFindings([string]$Base, [string]$Worktree, $Rules) {
             }
         }
 
+        # Помощники — кусок работы оркестратора, отданный субагенту: шаг, чью работу делает
+        # не он, звать помощников некому.
         $executor = $step.keys['исполнитель']
+        $helpers = @(($step.keys['помощники'] -split ',') | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+        if ($helpers.Count -and $executor -and $executor -ne 'оркестратор') {
+            New-KitFinding 'FAIL' 'flow.md' "шаг ${n}: ключ «помощники» — зовёт их оркестратор, а работу шага делает «$executor»"
+        }
+        foreach ($helper in $helpers) {
+            if ($null -eq $agents) { $agents = Get-KitVisibleAgents $Worktree }
+            if (-not $agents.ContainsKey($helper)) {
+                New-KitFinding 'WARN' 'flow.md' "шаг ${n}: помощника «$helper» не видно — может прийти из плагина; нет его — вопрос оператору"
+            }
+        }
+
         if (-not $executor -or $Rules.executors -contains $executor) { continue }
         if ($null -eq $agents) { $agents = Get-KitVisibleAgents $Worktree }
         if (-not $agents.ContainsKey($executor)) {
