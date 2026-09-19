@@ -649,7 +649,8 @@ function ConvertTo-KitStepName([string]$Name) {
 
 # Флоу: то, что не даст пройти шаг однозначно, — нет обязательного ключа, чужой ключ,
 # невидимый исполнитель или помощник, помощники не у оркестратора, сбитый порядок, ссылка
-# с шага на шаг номером или на название, которого во флоу нет, два шага с одним названием.
+# с шага на шаг номером или на название, которого во флоу нет, два шага с одним названием,
+# возврат без условия, без названия шага в кавычках, на шаг, которого нет, или не назад по флоу.
 # Длину флоу сверка не проверяет; отсутствие файла назвала сверка каркаса.
 function Get-KitFlowFindings([string]$Base, [string]$Worktree, $Rules) {
     $path = Join-Path $Base 'flow.md'
@@ -668,7 +669,9 @@ function Get-KitFlowFindings([string]$Base, [string]$Worktree, $Rules) {
             $current = @{
                 number = [int]$heading.Groups[1].Value
                 name = $heading.Groups[2].Value
+                index = $steps.Count
                 keys = [ordered]@{}
+                returns = [System.Collections.Generic.List[string]]::new()
                 body = [System.Collections.Generic.List[string]]::new()
             }
             $steps += $current
@@ -682,7 +685,15 @@ function Get-KitFlowFindings([string]$Base, [string]$Worktree, $Rules) {
         }
         if ($inKeys -and $line -notmatch '^\s*\d+(\.\d+)+\.\s') {
             $pair = [regex]::Match($line, '^([^\s:][^:]*?)\s*:\s*(.*?)\s*$')
-            if ($pair.Success) { $current.keys[$pair.Groups[1].Value] = $pair.Groups[2].Value; continue }
+            if ($pair.Success) {
+                $pairKey = $pair.Groups[1].Value
+                $pairValue = $pair.Groups[2].Value
+                # Возврат пишется строкой на каждый возврат, и все они нужны разом;
+                # прочие ключи идут по одной строке, и в $keys хватает последней.
+                if ($pairKey -eq 'возврат') { $current.returns.Add($pairValue) }
+                $current.keys[$pairKey] = $pairValue
+                continue
+            }
         }
         $inKeys = $false
         $current.body.Add($line)
@@ -699,10 +710,10 @@ function Get-KitFlowFindings([string]$Base, [string]$Worktree, $Rules) {
     foreach ($step in $steps) {
         $key = ConvertTo-KitStepName $step.name
         if ($names.ContainsKey($key)) {
-            New-KitFinding 'FAIL' 'flow.md' "шаг $($step.number): название «$($step.name)» уже у шага $($names[$key]) — ссылка на такой шаг неоднозначна"
+            New-KitFinding 'FAIL' 'flow.md' "шаг $($step.number): название «$($step.name)» уже у шага $($names[$key].number) — ссылка на такой шаг неоднозначна"
             continue
         }
-        $names[$key] = $step.number
+        $names[$key] = $step
     }
 
     $agents = $null
@@ -734,6 +745,33 @@ function Get-KitFlowFindings([string]$Base, [string]$Worktree, $Rules) {
                 if (-not $names.ContainsKey((ConvertTo-KitStepName $name))) {
                     New-KitFinding 'FAIL' 'flow.md' "шаг ${n}: ссылка на шаг «$name» — такого шага во флоу нет"
                 }
+            }
+        }
+
+        # Возврат в описание шага не попадает — он ключ, и правила ссылки его строку не
+        # видят; направление проверяется по положению шага, а не по номеру: номера бывают сбиты.
+        foreach ($return in $step.returns) {
+            $numbered = [regex]::Matches($return, '(?i)\bшаг[а-яё]*\s+(\d+)')
+            foreach ($ref in $numbered) {
+                New-KitFinding 'FAIL' 'flow.md' "шаг ${n}: возврат «$($ref.Value)» — на шаг ссылаются названием в кавычках"
+            }
+            $target = [regex]::Match($return, '(?i)\bшаг[а-яё]*\s+«([^»]+)»')
+            if (-not $target.Success) {
+                if (-not $numbered.Count) {
+                    New-KitFinding 'FAIL' 'flow.md' "шаг ${n}: возврат «$return» — назад адресуются шагом и названием в кавычках"
+                }
+                continue
+            }
+            $targetName = $target.Groups[1].Value
+            if (-not $return.Substring(0, $target.Index).Trim([char[]]' —-:,')) {
+                New-KitFinding 'FAIL' 'flow.md' "шаг ${n}: возврат к шагу «$targetName» без условия"
+            }
+            $targetKey = ConvertTo-KitStepName $targetName
+            if (-not $names.ContainsKey($targetKey)) {
+                New-KitFinding 'FAIL' 'flow.md' "шаг ${n}: возврат к шагу «$targetName» — такого шага во флоу нет"
+            }
+            elseif ($names[$targetKey].index -ge $step.index) {
+                New-KitFinding 'FAIL' 'flow.md' "шаг ${n}: возврат к шагу «$targetName» — он не раньше: флоу вперёд не прыгает"
             }
         }
 
