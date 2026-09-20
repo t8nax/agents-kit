@@ -171,8 +171,9 @@ function Get-KitAgentExcludeLine([string]$Scope, [string]$Name) {
     return "/$prefix.claude/agents/$Name"
 }
 
-# Что кит разложил сюда прошлым прогоном. Своим он считает только это: файл, которого в блоке
-# нет, положен не им, и трогать его нельзя.
+# Субагенты, которых кит прятал здесь прошлым прогоном. Файла, которого в блоке нет, кит не
+# клал, и трогать его нельзя; но и в блоке не одно его — имя могло быть занято файлом проекта,
+# и отслеживаемое спрашивают отдельно.
 function Get-KitDeployedAgents([string]$Worktree) {
     $names = [System.Collections.Generic.List[string]]::new()
     $path = Get-KitAgentExcludePath $Worktree
@@ -190,21 +191,33 @@ function Get-KitDeployedAgents([string]$Worktree) {
     return $names
 }
 
-# Отслеживаемое git рядом принадлежит проекту: такой файл кит не пишет и не удаляет.
-function Get-KitTrackedAgents([string]$Worktree) {
+# Что git проекта говорит про каталог субагентов копии: пути от корня дерева, имя — последний
+# отрезок. Спрашивают его о разном, а отрезок пути к каталогу один на все вопросы.
+function Get-KitAgentGitNames([string]$Worktree, [string[]]$Flags) {
     $names = [System.Collections.Generic.List[string]]::new()
     $tree = Get-KitTreeRoot $Worktree
     if (-not $tree) { return $names }
     $prefix = ''
     $scope = Get-KitScopeSegment $tree $Worktree
     if ($scope) { $prefix = "$scope/" }
-    $out = & git -C $tree ls-files -- "$prefix.claude/agents" 2>$null
+    $out = & git -C $tree ls-files @Flags -- "$prefix.claude/agents" 2>$null
     if ($LASTEXITCODE -ne 0 -or -not $out) { return $names }
     foreach ($rel in @($out)) {
         if (-not $rel) { continue }
         $names.Add(($rel -split '/')[-1])
     }
     return $names
+}
+
+# Отслеживаемое git рядом принадлежит проекту: такой файл кит не пишет и не удаляет.
+function Get-KitTrackedAgents([string]$Worktree) {
+    return Get-KitAgentGitNames $Worktree @()
+}
+
+# Разложенное, которого git проекта не прячет: укрытие слетело, и такой файл унесёт в историю
+# проекта первая же сессия, добавляющая в коммит всё подряд.
+function Get-KitUnhiddenAgents([string]$Worktree) {
+    return Get-KitAgentGitNames $Worktree @('--others', '--exclude-standard')
 }
 
 # Текст субагента для сравнения базы с копией: концы строк и хвостовые пробелы расхождением

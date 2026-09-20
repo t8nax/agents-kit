@@ -97,10 +97,11 @@ foreach ($name in $deployed) {
     $removed.Add($name)
 }
 
-$lines = @(foreach ($name in @($sources.Keys)) {
-    if ($tracked -contains $name) { continue }
-    Get-KitAgentExcludeLine $state.scope $name
-})
+# Строка пишется на каждого субагента базы, включая занятое имя: файл исключений один на все
+# копии репозитория, а занятые имена у них разные, и блок, собранный по составу одной копии,
+# стирал бы прогон в соседней. Отслеживаемый файл лишняя строка не задевает — исключения к нему
+# git не применяет.
+$lines = @(foreach ($name in @($sources.Keys)) { Get-KitAgentExcludeLine $state.scope $name })
 if ($PSCmdlet.ShouldProcess($excludePath, 'переписать блок кита в исключениях копии')) {
     Set-KitAgentExcludeBlock $excludePath (Get-KitAgentExcludeMarks $state.scope) $lines
 }

@@ -613,6 +613,8 @@ try {
 
     Check 'снятый из базы уходит из копии, файл проекта остаётся' {
         Remove-Item -LiteralPath (Join-Path $agentsDir 'guard.md') -Force
+        $problem = ExpectNoText $repo 'остались в копии от прежней раскладки'
+        if ($problem) { return $problem }
         Remove-Item -LiteralPath $scout -Force
         $r = Invoke-AgentsDeploy $repo
         if ($r.code -ne 0) { return "код возврата $($r.code): $($r.text)" }
@@ -647,6 +649,41 @@ try {
         if (-not (Test-Path -LiteralPath $dst -PathType Leaf)) { return "субагента в связанной копии нет: $out" }
         $dirty = @(& git -C $late status --porcelain | Where-Object { $_ })
         if ($dirty.Count) { return "git связанной копии видит разложенное: $($dirty -join '; ')" }
+        return $null
+    }
+
+    # Файл исключений у копий репозитория общий, а состав занятых имён у них разный: собирай кит
+    # блок по составу той копии, где идёт, — прогон в одной снимал бы укрытие с соседней.
+    Check 'прогон в соседней копии не снимает укрытия с этой' {
+        $r = Invoke-AgentsDeploy $repo
+        if ($r.code -ne 0) { return "код возврата $($r.code): $($r.text)" }
+        if (-not (Test-Path -LiteralPath (Join-Path $copyAgents 'scout.md') -PathType Leaf)) { return 'субагента в копии нет' }
+        $own = Join-Path (Join-Path (Join-Path $wt '.claude') 'agents') 'scout.md'
+        New-Item -ItemType Directory -Force -Path (Split-Path $own -Parent) | Out-Null
+        Set-Content -LiteralPath $own -Encoding utf8 -Value '---', 'name: scout', '---', '', 'файл проекта'
+        & git -C $wt add -f -- '.claude/agents/scout.md' 2>$null | Out-Null
+        $r = Invoke-AgentsDeploy $wt
+        if ($r.code -ne 0) { return "код возврата $($r.code): $($r.text)" }
+        $dirty = @(& git -C $repo status --porcelain | Where-Object { $_ })
+        if ($dirty.Count) { return "git копии видит разложенное после прогона в соседней: $($dirty -join '; ')" }
+        & git -C $wt rm -q --cached -- '.claude/agents/scout.md' 2>$null | Out-Null
+        Remove-Item -LiteralPath $own -Force
+        return $null
+    }
+
+    # Укрытие слетает и мимо кита: файл исключений почистили руками, копия стоит на старом ките.
+    # Файл при этом довезён и сверен с базой — назвать пропажу больше нечему.
+    Check 'укрытие слетело — сверка называет' {
+        $exclude = Join-Path (Join-Path (Join-Path $repo '.git') 'info') 'exclude'
+        Set-Content -LiteralPath $exclude -Encoding utf8 -Value ''
+        $problem = ExpectText $repo 'видны git проекта'
+        if ($problem) { return $problem }
+        $r = Invoke-AgentsDeploy $repo
+        if ($r.code -ne 0) { return "код возврата $($r.code): $($r.text)" }
+        $problem = ExpectNoText $repo 'видны git проекта'
+        if ($problem) { return $problem }
+        $dirty = @(& git -C $repo status --porcelain | Where-Object { $_ })
+        if ($dirty.Count) { return "укрытие не вернулось: $($dirty -join '; ')" }
         return $null
     }
 

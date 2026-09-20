@@ -812,6 +812,7 @@ function Get-KitAgentFindings([string]$Base, [string]$Worktree) {
     if (-not $sources.Count -and -not (Test-Path -LiteralPath $target -PathType Container)) { return }
 
     $tracked = @(Get-KitTrackedAgents $Worktree)
+    $unhidden = @(Get-KitUnhiddenAgents $Worktree)
     $groups = [ordered]@{}
     foreach ($name in @($sources.Keys)) {
         if ($tracked -contains $name) {
@@ -823,6 +824,9 @@ function Get-KitAgentFindings([string]$Base, [string]$Worktree) {
             Add-KitGroupedFinding $groups 'WARN' 'в эту копию не довезены' 'agents-deploy.ps1' $name
             continue
         }
+        if ($unhidden -contains $name) {
+            Add-KitGroupedFinding $groups 'WARN' 'видны git проекта' 'вернёт укрытие agents-deploy.ps1' $name
+        }
         if ((Get-KitAgentText $dst) -cne (Get-KitAgentText $sources[$name])) {
             Add-KitGroupedFinding $groups 'WARN' 'в копии разошлись с базой' 'верна база — agents-deploy.ps1' $name
         }
@@ -831,6 +835,7 @@ function Get-KitAgentFindings([string]$Base, [string]$Worktree) {
     # Разложенное прежним прогоном, чего в базе уже нет: сессия позвала бы снятого субагента.
     foreach ($name in @(Get-KitDeployedAgents $Worktree)) {
         if ($sources.Contains($name)) { continue }
+        if ($tracked -contains $name) { continue }
         if (-not (Test-Path -LiteralPath (Join-Path $target $name) -PathType Leaf)) { continue }
         Add-KitGroupedFinding $groups 'WARN' 'остались в копии от прежней раскладки' 'уберёт agents-deploy.ps1' $name
     }
