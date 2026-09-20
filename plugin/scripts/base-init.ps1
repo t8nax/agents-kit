@@ -1,12 +1,13 @@
 # agents-kit: завести каталог базы знаний проекта.
-#   pwsh -NoProfile -File scripts\base-init.ps1 -Path <каталог базы> [-Name <имя проекта>]
+#   pwsh -NoProfile -File scripts\base-init.ps1 -Path <каталог базы> [-Name <имя проекта>] [-Prefix <буквы номеров бэклога>]
 #
 # Только заведение. Связывание основной копии с базой и список копий — link.ps1.
 # Что лежит в базе и по каким правилам — reference\base-layout.md.
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
     [Parameter(Mandatory = $true)][string]$Path,
-    [string]$Name
+    [string]$Name,
+    [string]$Prefix
 )
 
 $ErrorActionPreference = 'Stop'
@@ -47,6 +48,24 @@ if ($probe) {
 
 if (-not $Name) { $Name = Split-Path $baseN -Leaf }
 
+# Буквы номеров бэклога называет проект; выбрать их за него значило бы дать каждой базе одни
+# и те же. Вид букв — reference\backlog-record.md, «Номер». Нехватка ловится до создания
+# каталога и до первого файла: отказ не оставляет полубазы.
+if ($Prefix) {
+    if ($Prefix -notmatch '^[A-Za-z][A-Za-z0-9]{0,9}$') {
+        throw "«$Prefix» не годится в буквы номеров бэклога: латиница и цифры, первый знак — буква, не больше 10 знаков"
+    }
+    $Prefix = $Prefix.ToUpperInvariant()
+}
+else {
+    foreach ($src in Get-ChildItem -LiteralPath $template -File -Force) {
+        if (Test-Path -LiteralPath (Join-Path $baseN $src.Name) -PathType Leaf) { continue }
+        if ((Get-Content -LiteralPath $src.FullName -Raw).Contains('<PREFIX>')) {
+            throw "файлу каркаса «$($src.Name)» нужны буквы номеров бэклога — передать -Prefix <буквы>"
+        }
+    }
+}
+
 if (-not (Test-Path -LiteralPath $baseN -PathType Container)) {
     if ($PSCmdlet.ShouldProcess($baseN, 'создать каталог базы')) {
         New-Item -ItemType Directory -Force -Path $baseN | Out-Null
@@ -61,6 +80,7 @@ else {
 # прогон довозит файл, появившийся в шаблоне позже, и не может съесть заполненный.
 $added = 0
 $kept = 0
+$prefixUsed = $false
 foreach ($src in Get-ChildItem -LiteralPath $template -File -Force) {
     $dst = Join-Path $baseN $src.Name
     if (Test-Path -LiteralPath $dst -PathType Leaf) {
@@ -69,6 +89,10 @@ foreach ($src in Get-ChildItem -LiteralPath $template -File -Force) {
         continue
     }
     $text = Get-Content -LiteralPath $src.FullName -Raw
+    if ($text.Contains('<PREFIX>')) {
+        $text = $text.Replace('<PREFIX>', $Prefix)
+        $prefixUsed = $true
+    }
     $text = $text.Replace('<PROJECT>', $Name)
     if ($PSCmdlet.ShouldProcess($dst, 'записать файл каркаса')) {
         Set-Content -LiteralPath $dst -Value $text -Encoding utf8 -NoNewline
@@ -101,5 +125,6 @@ if (-not $head -and $PSCmdlet.ShouldProcess($baseN, 'первый коммит �
 
 Write-Host ''
 Write-Host "Заведено файлов: $added, оставлено нетронутыми: $kept"
+if ($prefixUsed) { Write-Host "Бэклог нумеруется буквами $Prefix" }
 Write-Host "Дальше — связать основную копию, из её каталога:"
 Write-Host "  pwsh -NoProfile -File `"$(Join-Path $PSScriptRoot 'link.ps1')`" -Base `"$baseN`""

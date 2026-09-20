@@ -120,8 +120,10 @@ function Invoke-WorktreeRemove([string]$Dir) {
     return [pscustomobject]@{ code = $LASTEXITCODE; text = ($out -join "`n") }
 }
 
-function Invoke-BaseInit([string]$Dir) {
-    $out = & pwsh -NoProfile -File $init -Path $Dir 2>&1
+function Invoke-BaseInit([string]$Dir, [string]$Prefix = 'ORD') {
+    $callArgs = @('-NoProfile', '-File', $init, '-Path', $Dir)
+    if ($Prefix) { $callArgs += @('-Prefix', $Prefix) }
+    $out = & pwsh @callArgs 2>&1
     return [pscustomobject]@{ code = $LASTEXITCODE; text = ($out -join "`n") }
 }
 
@@ -188,6 +190,7 @@ $modSrc  = Join-Path $modFoo 'src'
 $modCase = Join-Path $mono 'Mixed\Case'
 $baseFoo = Join-Path $root 'base-foo'
 $baseBar = Join-Path $root 'base-bar'
+$basePfx = Join-Path $root 'base-prefix'
 
 try {
     New-Item -ItemType Directory -Force -Path $plain, $notbase | Out-Null
@@ -227,6 +230,23 @@ try {
         if ($r.code -ne 0) { return "код возврата $($r.code): $($r.text)" }
         if ((Get-Content -LiteralPath $product -Raw).Trim() -ne 'заполнено человеком') { return 'product.md перезаписан' }
         if (-not (Test-Path -LiteralPath (Join-Path $base 'backlog.md') -PathType Leaf)) { return 'backlog.md не довезён' }
+        return $null
+    }
+
+    # Буквы номеров бэклога называет проект. Отказ стоит дешевле базы, заведённой с чужими
+    # буквами: номера записей уже розданы, когда расхождение заметят.
+    Check 'заведение без букв номеров — отказ, каркас не тронут' {
+        $r = Invoke-BaseInit $basePfx ''
+        if ($r.code -eq 0) { return 'скрипт не отказал' }
+        if (Test-Path -LiteralPath (Join-Path $basePfx 'backlog.md')) { return 'backlog.md всё-таки заведён' }
+        return $null
+    }
+
+    Check 'буквы номеров встали в счётчик бэклога' {
+        $r = Invoke-BaseInit $basePfx 'ord'
+        if ($r.code -ne 0) { return "код возврата $($r.code): $($r.text)" }
+        $text = Get-Content -LiteralPath (Join-Path $basePfx 'backlog.md') -Raw
+        if ($text -notmatch '(?m)^следующий номер: ORD-1\s*$') { return "в счётчике не «ORD-1»: $text" }
         return $null
     }
 

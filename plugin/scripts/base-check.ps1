@@ -372,13 +372,31 @@ function Get-KitBacklogFieldFindings([string]$Label, [string]$Head, $Entries, $R
     Get-KitGroupedFindings $groups $Label
 }
 
+# Буквы номера задаёт база, и держит их строка счётчика — второго места у них нет. Счётчика нет
+# (он сам находка) — буквы берутся из первой записи с номером: иначе до его появления перестал
+# бы находиться повтор номера. Разбор один на бэклог и на память задачи: разойдись они, взятая
+# запись перестала бы сходиться со своей памятью.
+function Get-KitBacklogCounter([string]$Text) {
+    return [regex]::Match($Text, '(?im)^\s*следующий\s+номер\s*:\s*([A-Za-z][A-Za-z0-9]*)-(\d+)\s*$')
+}
+
+function Get-KitBacklogPrefix([string]$Text) {
+    $counter = Get-KitBacklogCounter $Text
+    if ($counter.Success) { return $counter.Groups[1].Value }
+    $first = [regex]::Match($Text, '(?m)^##\s+([A-Za-z][A-Za-z0-9]*)-\d+\b')
+    if ($first.Success) { return $first.Groups[1].Value }
+    return $null
+}
+
 # Номер записи бэклога выдаёт счётчик в шапке файла: из оставшихся записей номер не вычислить,
 # по истории git тоже — она не видит незакоммиченных записей соседней копии. Запись — заголовок
-# «##», под ним подряд пары «ключ: значение». Повтор номера и счётчик не выше наибольшего — FAIL;
-# запись без номера и файл без счётчика чинит /backlog — WARN.
+# «##», под ним подряд пары «ключ: значение». Повтор номера, номер чужими буквами и счётчик не
+# выше наибольшего — FAIL; запись без номера и файл без счётчика чинит /backlog — WARN.
 function Get-KitBacklogFindings([string]$Path, [string]$Label, $Rules) {
     $text = Read-KitMarkdown $Path
+    $prefix = Get-KitBacklogPrefix $text
     $numbers = @{}
+    $foreign = [ordered]@{}
     $unnumbered = 0
     $entries = @()
     $head = [System.Collections.Generic.List[string]]::new()
@@ -386,18 +404,23 @@ function Get-KitBacklogFindings([string]$Path, [string]$Label, $Rules) {
     $inKeys = $false
     foreach ($line in ($text -split '\r?\n')) {
         if ($line -match '^##\s') {
-            $m = [regex]::Match($line, '^##\s+B-(\d+)\b')
-            if ($m.Success) {
+            $m = if ($prefix) { [regex]::Match($line, "(?i)^##\s+$prefix-(\d+)\b") } else { $null }
+            if ($m -and $m.Success) {
                 $n = [int]$m.Groups[1].Value
                 $numbers[$n] = 1 + [int]$numbers[$n]
-                $current = @{ label = "B-$n"; keys = [ordered]@{} }
+                $current = @{ label = "$prefix-$n"; keys = [ordered]@{} }
             }
             else {
-                $unnumbered++
                 # Имя записи без номера — её заголовок, и в перечне записей он берётся в кавычки:
                 # иначе границы между ним и соседним номером не видно.
                 $title = $line -replace '^#+\s*', ''
                 if ($title.Length -gt 60) { $title = $title.Substring(0, 60) + '…' }
+                # Запись чужими буквами не считается ненумерованной: выдай ей /backlog свой номер,
+                # заголовок оператора переписался бы молча.
+                if ($prefix -and $line -match '^##\s+[A-Za-z][A-Za-z0-9]*-\d+\b') {
+                    Add-KitGroupedFinding $foreign 'FAIL' "нумерованы не буквами «$prefix-»" 'выдать номер счётчиком' "«$title»"
+                }
+                else { $unnumbered++ }
                 $current = @{ label = "«$title»"; keys = [ordered]@{} }
             }
             $entries += $current
@@ -419,21 +442,22 @@ function Get-KitBacklogFindings([string]$Path, [string]$Label, $Rules) {
     }
 
     foreach ($n in @($numbers.Keys | Where-Object { $numbers[$_] -gt 1 } | Sort-Object)) {
-        New-KitFinding 'FAIL' $Label "номер B-$n у $($numbers[$n]) записей — одной из записей выдать новый через счётчик"
+        New-KitFinding 'FAIL' $Label "номер $prefix-$n у $($numbers[$n]) записей — одной из записей выдать новый через счётчик"
     }
     if ($unnumbered) {
         New-KitFinding 'WARN' $Label "$unnumbered записей без номера — пронумерует /backlog"
     }
+    Get-KitGroupedFindings $foreign $Label
 
-    $counter = [regex]::Match($text, '(?im)^\s*следующий\s+номер\s*:\s*B-(\d+)\s*$')
+    $counter = Get-KitBacklogCounter $text
     if (-not $counter.Success) {
-        New-KitFinding 'WARN' $Label 'нет строки «следующий номер: B-N» — поставит /backlog'
+        New-KitFinding 'WARN' $Label 'нет строки «следующий номер: <буквы>-N» — поставит /backlog'
     }
     else {
-        $next = [int]$counter.Groups[1].Value
+        $next = [int]$counter.Groups[2].Value
         $max = @($numbers.Keys | Sort-Object -Descending | Select-Object -First 1)
         if ($max.Count -and $next -le $max[0]) {
-            New-KitFinding 'FAIL' $Label "следующий номер B-$next не выше наибольшего B-$($max[0]) — поднять счётчик за наибольший"
+            New-KitFinding 'FAIL' $Label "следующий номер $prefix-$next не выше наибольшего $prefix-$($max[0]) — поднять счётчик за наибольший"
         }
     }
 
@@ -639,18 +663,21 @@ function Get-KitForeignMemoryFindings([string]$Base, [string]$Path, [string]$Lab
 # и называет; у чужой памяти читается только номер в заголовке. Своя она или чужая — по
 # объявленной копии, как и везде: по адресу лежит и файл, положенный руками.
 function Get-KitTakenRecordFindings([string]$Base, [string]$Path, [string]$Label, [string]$Worktree) {
-    $text = Read-KitMarkdown $Path
-    $number = [regex]::Match($text, '(?m)^#\s+B-(\d+)\b')
-    if (-not $number.Success) { return }
-    $n = [int]$number.Groups[1].Value
-
     $backlog = Join-Path $Base 'backlog.md'
     if (-not (Test-Path -LiteralPath $backlog -PathType Leaf)) { return }
-    if ((Read-KitMarkdown $backlog) -notmatch "(?m)^##\s+B-$n\b") { return }
+    $backlogText = Read-KitMarkdown $backlog
+    $prefix = Get-KitBacklogPrefix $backlogText
+    if (-not $prefix) { return }
+
+    $text = Read-KitMarkdown $Path
+    $number = [regex]::Match($text, "(?im)^#\s+$prefix-(\d+)\b")
+    if (-not $number.Success) { return }
+    $n = [int]$number.Groups[1].Value
+    if ($backlogText -notmatch "(?im)^##\s+$prefix-$n\b") { return }
 
     $declared = Get-KitDeclaredWorktree $text
     $fix = if ($declared -and $declared -ieq $Worktree) { 'вырезать запись' } else { 'не своя, решает оператор' }
-    New-KitFinding 'FAIL' 'backlog.md' "запись B-$n взята — память «$Label» живёт, а запись осталась: $fix"
+    New-KitFinding 'FAIL' 'backlog.md' "запись $prefix-$n взята — память «$Label» живёт, а запись осталась: $fix"
 }
 
 # Ответ оператора вбирается и удаляется вместе с вопросом тем же обновлением, поэтому в коммит
