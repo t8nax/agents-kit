@@ -70,7 +70,7 @@ function Get-KitDeclaredWorktree([string]$Text) {
 }
 
 # Раздел справки кита — от заголовка до следующего заголовка того же уровня или выше.
-# Заголовок внутри блока кода разделом не считается: пример шага флоу начинается с «##».
+# Заголовок внутри блока кода разделом не считается: пример стадии флоу начинается с «##».
 function Get-KitLayoutSection([string]$Text, [string]$Heading) {
     $level = $Heading.IndexOf(' ')
     $lines = [System.Collections.Generic.List[string]]::new()
@@ -642,21 +642,21 @@ function Get-KitVisibleAgents([string]$Worktree) {
     return $names
 }
 
-# Название шага как адрес ссылки: пробелы и регистр адреса не меняют.
+# Название стадии как адрес ссылки: пробелы и регистр адреса не меняют.
 function ConvertTo-KitStepName([string]$Name) {
     return ([regex]::Replace($Name, '\s+', ' ')).Trim().ToLowerInvariant()
 }
 
-# Флоу: то, что не даст пройти шаг однозначно, — нет обязательного ключа, чужой ключ,
+# Флоу: то, что не даст пройти стадию однозначно, — нет обязательного ключа, чужой ключ,
 # невидимый исполнитель или помощник, помощники не у оркестратора, сбитый порядок, ссылка
-# с шага на шаг номером или на название, которого во флоу нет, два шага с одним названием,
-# возврат без условия, без названия шага в кавычках, на шаг, которого нет, или не назад по флоу.
+# со стадии на стадию номером или на название, которого во флоу нет, две стадии с одним названием,
+# возврат без условия, без названия стадии в кавычках, на стадию, которой нет, или не назад по флоу.
 # Длину флоу сверка не проверяет; отсутствие файла назвала сверка каркаса.
 function Get-KitFlowFindings([string]$Base, [string]$Worktree, $Rules) {
     $path = Join-Path $Base 'flow.md'
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return }
     if (-not $Rules.flowKeys.Contains('исполнитель') -or -not $Rules.executors.Count) {
-        New-KitFinding 'FAIL' 'flow.md' 'перечень ключей шага не разобран — таблица в разделе «Флоу проекта» раскладки'
+        New-KitFinding 'FAIL' 'flow.md' 'перечень ключей стадии не разобран — таблица в разделе «Флоу проекта» раскладки'
         return
     }
 
@@ -704,13 +704,13 @@ function Get-KitFlowFindings([string]$Base, [string]$Worktree, $Rules) {
         return
     }
 
-    # Адрес шага — название: номер съезжает вслед за перестановкой шагов, а описание
-    # остаётся связным и ведёт в чужой шаг молча. Отсюда и запрет одинаковых названий.
+    # Адрес стадии — название: номер съезжает вслед за перестановкой стадий, а описание
+    # остаётся связным и ведёт в чужую стадию молча. Отсюда и запрет одинаковых названий.
     $names = @{}
     foreach ($step in $steps) {
         $key = ConvertTo-KitStepName $step.name
         if ($names.ContainsKey($key)) {
-            New-KitFinding 'FAIL' 'flow.md' "шаг $($step.number): название «$($step.name)» уже у шага $($names[$key].number) — ссылка на такой шаг неоднозначна"
+            New-KitFinding 'FAIL' 'flow.md' "стадия $($step.number): название «$($step.name)» уже у стадии $($names[$key].number) — ссылка на такую стадию неоднозначна"
             continue
         }
         $names[$key] = $step
@@ -721,78 +721,78 @@ function Get-KitFlowFindings([string]$Base, [string]$Worktree, $Rules) {
     foreach ($step in $steps) {
         $n = $step.number
         if ($n -ne $previous + 1) {
-            New-KitFinding 'WARN' 'flow.md' "шаг $n после шага $previous — порядок исполнения — порядок номеров"
+            New-KitFinding 'WARN' 'flow.md' "стадия $n после стадии $previous — порядок исполнения — порядок номеров"
         }
         $previous = $n
 
         foreach ($key in $step.keys.Keys) {
             if (-not $Rules.flowKeys.Contains($key)) {
-                New-KitFinding 'FAIL' 'flow.md' "шаг ${n}: ключ «$key» вне перечня — своих ключей не заводят"
+                New-KitFinding 'FAIL' 'flow.md' "стадия ${n}: ключ «$key» вне перечня — своих ключей не заводят"
             }
         }
         foreach ($key in $Rules.flowKeys.Keys) {
             if (-not $Rules.flowKeys[$key]) { continue }
-            if (-not $step.keys.Contains($key)) { New-KitFinding 'FAIL' 'flow.md' "шаг ${n}: нет ключа «$key»" }
-            elseif (-not $step.keys[$key]) { New-KitFinding 'FAIL' 'flow.md' "шаг ${n}: ключ «$key» пуст" }
+            if (-not $step.keys.Contains($key)) { New-KitFinding 'FAIL' 'flow.md' "стадия ${n}: нет ключа «$key»" }
+            elseif (-not $step.keys[$key]) { New-KitFinding 'FAIL' 'flow.md' "стадия ${n}: ключ «$key» пуст" }
         }
 
         foreach ($line in $step.body) {
-            foreach ($ref in [regex]::Matches($line, '(?i)\bшаг[а-яё]*\s+(\d+)')) {
-                New-KitFinding 'FAIL' 'flow.md' "шаг ${n}: ссылка «$($ref.Value)» — на шаг ссылаются названием в кавычках"
+            foreach ($ref in [regex]::Matches($line, '(?i)\bстади[а-яё]*\s+(\d+)')) {
+                New-KitFinding 'FAIL' 'flow.md' "стадия ${n}: ссылка «$($ref.Value)» — на стадию ссылаются названием в кавычках"
             }
-            foreach ($ref in [regex]::Matches($line, '(?i)\bшаг[а-яё]*\s+«([^»]+)»')) {
+            foreach ($ref in [regex]::Matches($line, '(?i)\bстади[а-яё]*\s+«([^»]+)»')) {
                 $name = $ref.Groups[1].Value
                 if (-not $names.ContainsKey((ConvertTo-KitStepName $name))) {
-                    New-KitFinding 'FAIL' 'flow.md' "шаг ${n}: ссылка на шаг «$name» — такого шага во флоу нет"
+                    New-KitFinding 'FAIL' 'flow.md' "стадия ${n}: ссылка на стадию «$name» — такой стадии во флоу нет"
                 }
             }
         }
 
-        # Возврат в описание шага не попадает — он ключ, и правила ссылки его строку не
-        # видят; направление проверяется по положению шага, а не по номеру: номера бывают сбиты.
+        # Возврат в описание стадии не попадает — он ключ, и правила ссылки его строку не
+        # видят; направление проверяется по положению стадии, а не по номеру: номера бывают сбиты.
         foreach ($return in $step.returns) {
-            $numbered = [regex]::Matches($return, '(?i)\bшаг[а-яё]*\s+(\d+)')
+            $numbered = [regex]::Matches($return, '(?i)\bстади[а-яё]*\s+(\d+)')
             foreach ($ref in $numbered) {
-                New-KitFinding 'FAIL' 'flow.md' "шаг ${n}: возврат «$($ref.Value)» — на шаг ссылаются названием в кавычках"
+                New-KitFinding 'FAIL' 'flow.md' "стадия ${n}: возврат «$($ref.Value)» — на стадию ссылаются названием в кавычках"
             }
-            $target = [regex]::Match($return, '(?i)\bшаг[а-яё]*\s+«([^»]+)»')
+            $target = [regex]::Match($return, '(?i)\bстади[а-яё]*\s+«([^»]+)»')
             if (-not $target.Success) {
                 if (-not $numbered.Count) {
-                    New-KitFinding 'FAIL' 'flow.md' "шаг ${n}: возврат «$return» — назад адресуются шагом и названием в кавычках"
+                    New-KitFinding 'FAIL' 'flow.md' "стадия ${n}: возврат «$return» — назад адресуются стадией и названием в кавычках"
                 }
                 continue
             }
             $targetName = $target.Groups[1].Value
             if (-not $return.Substring(0, $target.Index).Trim([char[]]' —-:,')) {
-                New-KitFinding 'FAIL' 'flow.md' "шаг ${n}: возврат к шагу «$targetName» без условия"
+                New-KitFinding 'FAIL' 'flow.md' "стадия ${n}: возврат к стадии «$targetName» без условия"
             }
             $targetKey = ConvertTo-KitStepName $targetName
             if (-not $names.ContainsKey($targetKey)) {
-                New-KitFinding 'FAIL' 'flow.md' "шаг ${n}: возврат к шагу «$targetName» — такого шага во флоу нет"
+                New-KitFinding 'FAIL' 'flow.md' "стадия ${n}: возврат к стадии «$targetName» — такой стадии во флоу нет"
             }
             elseif ($names[$targetKey].index -ge $step.index) {
-                New-KitFinding 'FAIL' 'flow.md' "шаг ${n}: возврат к шагу «$targetName» — он не раньше: флоу вперёд не прыгает"
+                New-KitFinding 'FAIL' 'flow.md' "стадия ${n}: возврат к стадии «$targetName» — она не раньше: флоу вперёд не прыгает"
             }
         }
 
-        # Помощники — кусок работы оркестратора, отданный субагенту: шаг, чью работу делает
+        # Помощники — кусок работы оркестратора, отданный субагенту: стадия, чью работу делает
         # не он, звать помощников некому.
         $executor = $step.keys['исполнитель']
         $helpers = @(($step.keys['помощники'] -split ',') | ForEach-Object { $_.Trim() } | Where-Object { $_ })
         if ($helpers.Count -and $executor -and $executor -ne 'оркестратор') {
-            New-KitFinding 'FAIL' 'flow.md' "шаг ${n}: ключ «помощники» — зовёт их оркестратор, а работу шага делает «$executor»"
+            New-KitFinding 'FAIL' 'flow.md' "стадия ${n}: ключ «помощники» — зовёт их оркестратор, а работу стадии делает «$executor»"
         }
         foreach ($helper in $helpers) {
             if ($null -eq $agents) { $agents = Get-KitVisibleAgents $Worktree }
             if (-not $agents.ContainsKey($helper)) {
-                New-KitFinding 'WARN' 'flow.md' "шаг ${n}: помощника «$helper» не видно — может прийти из плагина; нет его — вопрос оператору"
+                New-KitFinding 'WARN' 'flow.md' "стадия ${n}: помощника «$helper» не видно — может прийти из плагина; нет его — вопрос оператору"
             }
         }
 
         if (-not $executor -or $Rules.executors -contains $executor) { continue }
         if ($null -eq $agents) { $agents = Get-KitVisibleAgents $Worktree }
         if (-not $agents.ContainsKey($executor)) {
-            New-KitFinding 'WARN' 'flow.md' "шаг ${n}: субагента «$executor» не видно — может прийти из плагина; нет его — вопрос оператору"
+            New-KitFinding 'WARN' 'flow.md' "стадия ${n}: субагента «$executor» не видно — может прийти из плагина; нет его — вопрос оператору"
         }
     }
 }
