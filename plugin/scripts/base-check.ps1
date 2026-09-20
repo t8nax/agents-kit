@@ -595,6 +595,11 @@ function Get-KitOwnMemoryFindings([string]$Path, [string]$Label, [string]$Worktr
     }
     Get-KitMemoryLayoutFindings $text $Label
 
+    # Нарезка видна и без коммита: на старте эту проверку зовёт подача.
+    if (@((Get-KitFlowMarks $text).Values | Where-Object { -not $_ }).Count -and -not @(Get-KitStepLines $text).Count) {
+        New-KitFinding 'FAIL' $Label 'во «Флоу» есть неотмеченная стадия, а «Шаги» пусты — работа открытой стадии режется строками до работы'
+    }
+
     Get-KitQuestionFindings $text $Label $Ceilings
 
     if (-not $Ceilings.memory) {
@@ -668,36 +673,94 @@ function Get-KitFlowMarks([string]$Text) {
     return $marks
 }
 
+# Строка «Шагов»: отметка, текст шага и то, чем он закрыт. Текст — ключ, по которому строка
+# узнаётся в прошлой версии: закрытие её дописывает, и сравнение строк целиком приняло бы
+# закрытую и незакрытую за разные шаги. Отрезает дописанное «— результат:» или «— пропущен:»,
+# а не первое тире: тире стоит и в самом шаге.
 function Get-KitStepLines([string]$Text) {
-    return @([regex]::Matches((Get-KitLayoutSection $Text '### Шаги'), '(?m)^\s*-\s*\[[ xX]\]\s*(.+?)\s*$') | ForEach-Object { $_.Groups[1].Value })
+    $steps = @()
+    foreach ($m in [regex]::Matches((Get-KitLayoutSection $Text '### Шаги'), '(?m)^\s*-\s*\[([ xX])\]\s*(.+?)\s*$')) {
+        $body = $m.Groups[2].Value
+        $closing = [regex]::Match($body, '\s—\s*(?=(результат|пропущен)\s*:)')
+        $head = $body
+        $tail = ''
+        if ($closing.Success) {
+            $head = $body.Substring(0, $closing.Index).TrimEnd()
+            $tail = $body.Substring($closing.Index + $closing.Length).Trim()
+        }
+        $steps += [pscustomobject]@{ text = $head; tail = $tail; closed = ($m.Groups[1].Value -ne ' ') }
+    }
+    return $steps
 }
 
-# Коммит, в котором сменились отметки «Флоу», несёт переход или возврат, а шаги покинутой стадии
-# уходят тем же обновлением: уцелевшая строка значит либо что их не убрали, либо что память
-# коммитится не сразу после пройденной стадии. Прошлая версия берётся из HEAD базы; нет её —
-# это коммит взятия или база без истории, и сверять не с чем.
-function Get-KitLeftoverStepFindings([string]$Base, [string]$Path, [string]$Label) {
+function Test-KitStepClosed($Step) {
+    if ($Step.tail -match '^пропущен\s*:\s*\S') { return $true }
+    return ($Step.tail -match '^результат\s*:\s*\S') -and ($Step.tail -match '—\s*проверен\s*:\s*\S')
+}
+
+# Находку читают в подаче, где строка шага с результатом и проверкой съела бы экран.
+function Get-KitStepQuote([string]$Text) {
+    if ($Text.Length -gt 60) { return $Text.Substring(0, 60) + '…' }
+    return $Text
+}
+
+# Шаги в коммите памяти: отмечались ли они по ходу и уходят ли закрытыми. Прошлая версия
+# берётся из HEAD базы; нет её — это коммит взятия или база без истории, и сравнивать не с чем,
+# а форму закрытых строк сверка называет и тогда. Правила — справка task-memory.md.
+function Get-KitStepFindings([string]$Base, [string]$Path, [string]$Label) {
+    $now = Read-KitMarkdown $Path
+    $nowSteps = @(Get-KitStepLines $now)
+    foreach ($step in $nowSteps) {
+        if ($step.closed -and -not (Test-KitStepClosed $step)) {
+            New-KitFinding 'FAIL' $Label "в «Шагах» закрытая строка «$(Get-KitStepQuote $step.text)» без «результат:» с «проверен:» и без «пропущен:»"
+        }
+    }
+
     $previous = & git -C $Base show "HEAD:$($Label.Replace([char]92, [char]47))" 2>$null
     if ($LASTEXITCODE -ne 0 -or -not $previous) { return }
 
     $was = ConvertTo-KitMarkdown ($previous -join "`n")
-    $now = Read-KitMarkdown $Path
+    $wasSteps = @(Get-KitStepLines $was)
+    $before = @{}
+    foreach ($step in $wasSteps) { $before[$step.text] = $step }
+    $after = @{}
+    foreach ($step in $nowSteps) { $after[$step.text] = $step }
+
     $wasMarks = Get-KitFlowMarks $was
     $nowMarks = Get-KitFlowMarks $now
     $moved = $false
+    $returned = $false
     foreach ($number in @($wasMarks.Keys) + @($nowMarks.Keys)) {
-        if ($wasMarks[$number] -ne $nowMarks[$number]) { $moved = $true; break }
+        if ($wasMarks[$number] -eq $nowMarks[$number]) { continue }
+        $moved = $true
+        # Возврат снимает отметку, переход ставит: недоделанное покинутой стадии возврат
+        # уносит вместе с кругом, а из пройденной стадии незакрытому шагу уйти некуда.
+        if ($wasMarks[$number] -and -not $nowMarks[$number]) { $returned = $true }
     }
+
+    $dropped = @($wasSteps | Where-Object { -not $returned -and -not $_.closed -and -not $after.ContainsKey($_.text) })
+    if ($dropped.Count) {
+        New-KitFinding 'FAIL' $Label "из «Шагов» ушло незакрытых строк: $($dropped.Count), первая — «$(Get-KitStepQuote $dropped[0].text)» — шаг уходит закрытым или с причиной пропуска"
+    }
+    $born = @($nowSteps | Where-Object { $_.closed -and -not $before.ContainsKey($_.text) })
+    if ($born.Count) {
+        New-KitFinding 'FAIL' $Label "в «Шагах» строка «$(Get-KitStepQuote $born[0].text)» появилась уже закрытой — сначала строка, потом работа"
+    }
+    # Закрылись две строки разом — отмечали не по ходу: отметка снимается со второй, первая
+    # коммитится, вторая закрывается снова.
+    $closed = @($nowSteps | Where-Object { $_.closed -and $before.ContainsKey($_.text) -and -not $before[$_.text].closed })
+    if ($closed.Count -gt 1) {
+        New-KitFinding 'FAIL' $Label "в «Шагах» закрыто строк одним коммитом: $($closed.Count) — шаг отмечается сразу после проверки и коммитится по одному"
+    }
+
+    # Коммит, в котором сменились отметки «Флоу», несёт переход или возврат, а шаги покинутой
+    # стадии уходят тем же обновлением: уцелевшая строка значит либо что их не убрали, либо что
+    # память коммитится не сразу после пройденной стадии.
     if (-not $moved) { return }
 
-    $before = @{}
-    foreach ($line in Get-KitStepLines $was) { $before[$line] = $true }
-    $left = @(Get-KitStepLines $now | Where-Object { $before.ContainsKey($_) })
+    $left = @($nowSteps | Where-Object { $before.ContainsKey($_.text) })
     if (-not $left.Count) { return }
-
-    $short = $left[0]
-    if ($short.Length -gt 60) { $short = $short.Substring(0, 60) + '…' }
-    New-KitFinding 'FAIL' $Label "в «Шагах» осталось строк прежней стадии: $($left.Count), первая — «$short» — отметки «Флоу» сменились, а шаги покинутой стадии уходят тем же обновлением"
+    New-KitFinding 'FAIL' $Label "в «Шагах» осталось строк прежней стадии: $($left.Count), первая — «$(Get-KitStepQuote $left[0].text)» — отметки «Флоу» сменились, а шаги покинутой стадии уходят тем же обновлением"
 }
 
 function Get-KitWorkFindings([string]$Base, [string]$Worktree, $Ceilings) {
@@ -943,7 +1006,7 @@ function Get-KitCommitFindings([string]$Base, [string]$Worktree, [string[]]$File
             if ($own -and $path -ieq $own) {
                 Get-KitOwnMemoryFindings $path $rel $Worktree $rules
                 Get-KitAnsweredQuestionFindings $path $rel
-                Get-KitLeftoverStepFindings $Base $path $rel
+                Get-KitStepFindings $Base $path $rel
                 Get-KitTakenRecordFindings $Base $path $rel $Worktree
             }
             else { New-KitFinding 'FAIL' $rel 'память другой рабочей копии в коммите — не своя, решает оператор' }
