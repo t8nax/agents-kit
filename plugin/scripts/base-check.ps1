@@ -297,6 +297,33 @@ function Get-KitKnowledgeCeilingFindings([string]$Path, [string]$Label, $Ceiling
     }
 }
 
+# Одно расхождение у многих записей — одна находка: бэклог потолка не имеет, и строка на запись
+# росла бы вместе с ним в подаче каждой сессии. Красная называет все записи: по ней чинят до
+# коммита, и с неназванной записью отказ повторится. Предупреждение висит в подаче, пока оператор
+# не дошёл до него сам, — сверх трёх записей оно идёт счётом.
+function Add-KitGroupedFinding($Groups, [string]$Severity, [string]$Head, [string]$Tail, [string]$Label) {
+    $key = "$Severity|$Head|$Tail"
+    if (-not $Groups.Contains($key)) {
+        $Groups[$key] = [pscustomobject]@{
+            severity = $Severity; head = $Head; tail = $Tail
+            labels = [System.Collections.Generic.List[string]]::new()
+        }
+    }
+    $Groups[$key].labels.Add($Label)
+}
+
+function Get-KitGroupedFindings($Groups, [string]$File) {
+    foreach ($group in $Groups.Values) {
+        $named = ($group.labels -join ', ')
+        if ($group.severity -ne 'FAIL' -and $group.labels.Count -gt 3) {
+            $named = (@($group.labels | Select-Object -First 3) -join ', ') + " и ещё $($group.labels.Count - 3)"
+        }
+        $message = "$($group.head): $named"
+        if ($group.tail) { $message += " — $($group.tail)" }
+        New-KitFinding $group.severity $File $message
+    }
+}
+
 # Поля записи объявлены строкой «поля:» шапки; без неё запись их не несёт. Ключом считается
 # только имя из перечня справки: текст оператору тоже начинается со слова и двоеточия, и всякая
 # пара «слово: слово» ушла бы в находки. Своё имя в «поля:», пустое значение и значение вне
@@ -319,27 +346,29 @@ function Get-KitBacklogFieldFindings([string]$Label, [string]$Head, $Entries, $R
         }
     }
 
+    $groups = [ordered]@{}
     foreach ($entry in $Entries) {
         foreach ($name in $fields) {
             if (-not $entry.keys.Contains($name)) {
-                New-KitFinding 'WARN' $Label "$($entry.label): нет поля «$name» — проставит /backlog"
+                Add-KitGroupedFinding $groups 'WARN' "нет поля «$name»" 'проставит /backlog' $entry.label
                 continue
             }
             $value = $entry.keys[$name]
             if (-not $value) {
-                New-KitFinding 'FAIL' $Label "$($entry.label): поле «$name» пусто"
+                Add-KitGroupedFinding $groups 'FAIL' "поле «$name» пусто" '' $entry.label
                 continue
             }
             if ($Rules.backlogFields[$name] -notcontains $value) {
-                New-KitFinding 'FAIL' $Label "$($entry.label): «$name : $value» вне перечня — $($Rules.backlogFields[$name] -join ' · ')"
+                Add-KitGroupedFinding $groups 'FAIL' "«$name : $value» вне перечня" ($Rules.backlogFields[$name] -join ' · ') $entry.label
             }
         }
         foreach ($key in $entry.keys.Keys) {
             if ($fields -notcontains $key) {
-                New-KitFinding 'WARN' $Label "$($entry.label): поле «$key» не объявлено строкой «поля:» шапки"
+                Add-KitGroupedFinding $groups 'WARN' "поле «$key» не объявлено строкой «поля:» шапки" '' $entry.label
             }
         }
     }
+    Get-KitGroupedFindings $groups $Label
 }
 
 # Номер записи бэклога выдаёт счётчик в шапке файла: из оставшихся записей номер не вычислить,
@@ -364,7 +393,11 @@ function Get-KitBacklogFindings([string]$Path, [string]$Label, $Rules) {
             }
             else {
                 $unnumbered++
-                $current = @{ label = ($line -replace '^#+\s*', ''); keys = [ordered]@{} }
+                # Имя записи без номера — её заголовок, и в перечне записей он берётся в кавычки:
+                # иначе границы между ним и соседним номером не видно.
+                $title = $line -replace '^#+\s*', ''
+                if ($title.Length -gt 60) { $title = $title.Substring(0, 60) + '…' }
+                $current = @{ label = "«$title»"; keys = [ordered]@{} }
             }
             $entries += $current
             $inKeys = $true
