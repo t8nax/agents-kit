@@ -142,6 +142,79 @@ function Get-KitWorkMemoryPath([string]$BaseDir, [string]$Worktree) {
     return ConvertTo-KitPath (Join-Path $BaseDir ('work\' + $slug + '.md'))
 }
 
+# Субагент базы, разложенный в рабочую копию: где лежит, чем спрятан от git проекта и что
+# из лежащего рядом принадлежит проекту. Адрес нужен и тому, кто раскладывает, и сверке,
+# поэтому живёт здесь, рядом с адресом памяти.
+function Get-KitAgentDir([string]$Worktree) {
+    if (-not $Worktree) { return $null }
+    return ConvertTo-KitPath (Join-Path (Join-Path $Worktree '.claude') 'agents')
+}
+
+# Файл исключений берётся из общего каталога git: у worktree он тот же, что у основной копии,
+# и пути в нём — от корня рабочего дерева, одинаковые для всех копий репозитория.
+function Get-KitAgentExcludePath([string]$Dir) {
+    $common = Invoke-KitGit $Dir @('rev-parse', '--path-format=absolute', '--git-common-dir')
+    if (-not $common) { return $null }
+    return ConvertTo-KitPath (Join-Path (ConvertTo-KitPath $common) 'info\exclude')
+}
+
+# Блок — на каждый связанный каталог репозитория: вторая связь монорепы иначе затирала бы первую.
+function Get-KitAgentExcludeMarks([string]$Scope) {
+    $key = '.'
+    if ($Scope) { $key = $Scope }
+    return [pscustomobject]@{ open = "# agents-kit $key"; close = "# /agents-kit $key" }
+}
+
+function Get-KitAgentExcludeLine([string]$Scope, [string]$Name) {
+    $prefix = ''
+    if ($Scope) { $prefix = "$Scope/" }
+    return "/$prefix.claude/agents/$Name"
+}
+
+# Что кит разложил сюда прошлым прогоном. Своим он считает только это: файл, которого в блоке
+# нет, положен не им, и трогать его нельзя.
+function Get-KitDeployedAgents([string]$Worktree) {
+    $names = [System.Collections.Generic.List[string]]::new()
+    $path = Get-KitAgentExcludePath $Worktree
+    if (-not $path -or -not (Test-Path -LiteralPath $path -PathType Leaf)) { return $names }
+    try { $lines = @(Get-Content -LiteralPath $path -ErrorAction Stop) } catch { return $names }
+    $marks = Get-KitAgentExcludeMarks (Get-KitScopeSegment (Get-KitTreeRoot $Worktree) $Worktree)
+    $inside = $false
+    foreach ($line in $lines) {
+        $text = $line.Trim()
+        if ($text -eq $marks.open) { $inside = $true; continue }
+        if ($text -eq $marks.close) { $inside = $false; continue }
+        if (-not $inside -or -not $text) { continue }
+        $names.Add(($text -split '/')[-1])
+    }
+    return $names
+}
+
+# Отслеживаемое git рядом принадлежит проекту: такой файл кит не пишет и не удаляет.
+function Get-KitTrackedAgents([string]$Worktree) {
+    $names = [System.Collections.Generic.List[string]]::new()
+    $tree = Get-KitTreeRoot $Worktree
+    if (-not $tree) { return $names }
+    $prefix = ''
+    $scope = Get-KitScopeSegment $tree $Worktree
+    if ($scope) { $prefix = "$scope/" }
+    $out = & git -C $tree ls-files -- "$prefix.claude/agents" 2>$null
+    if ($LASTEXITCODE -ne 0 -or -not $out) { return $names }
+    foreach ($rel in @($out)) {
+        if (-not $rel) { continue }
+        $names.Add(($rel -split '/')[-1])
+    }
+    return $names
+}
+
+# Текст субагента для сравнения базы с копией: концы строк и хвостовые пробелы расхождением
+# не считаются, остальное — как есть.
+function Get-KitAgentText([string]$Path) {
+    try { $text = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop } catch { return $null }
+    if ($null -eq $text) { return '' }
+    return ([regex]::Replace($text, "[ `t]*`r?`n", "`n")).TrimEnd()
+}
+
 function Get-KitMarkerPath([string]$BaseDir) {
     return (Join-Path $BaseDir 'agents-kit.json')
 }

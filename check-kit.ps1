@@ -17,6 +17,8 @@ $link = Join-Path $scripts 'link.ps1'
 $init = Join-Path $scripts 'base-init.ps1'
 $script:remove = Join-Path $scripts 'worktree-remove.ps1'
 $script:await = Join-Path $scripts 'await-answer.ps1'
+$script:deploy = Join-Path $scripts 'agents-deploy.ps1'
+$script:wtAdd = Join-Path $scripts 'worktree-add.ps1'
 $root = Join-Path ([System.IO.Path]::GetTempPath()) ("agents-kit-check-" + [guid]::NewGuid().ToString('N').Substring(0, 8))
 
 # Без этих переменных первый коммит base-init.ps1 зависел бы от конфига машины.
@@ -120,6 +122,11 @@ function Invoke-WorktreeRemove([string]$Dir) {
 
 function Invoke-BaseInit([string]$Dir) {
     $out = & pwsh -NoProfile -File $init -Path $Dir 2>&1
+    return [pscustomobject]@{ code = $LASTEXITCODE; text = ($out -join "`n") }
+}
+
+function Invoke-AgentsDeploy([string]$Dir) {
+    $out = & pwsh -NoProfile -File $script:deploy -Path $Dir 2>&1
     return [pscustomobject]@{ code = $LASTEXITCODE; text = ($out -join "`n") }
 }
 
@@ -559,6 +566,110 @@ try {
 
     Check 'отчёт link.ps1 в корне монорепы — называет связанные каталоги' {
         ExpectLinkReport $mono 0 'packages/foo'
+    }
+
+    # Субагенты базы: гоняется настоящий скрипт раскладки. Проверяется то, чем раскладка
+    # отличается от копирования файла, — git проекта её не видит, база верна, чужое не тронуто.
+    $agentsDir = Join-Path $base 'agents'
+    $copyAgents = Join-Path (Join-Path $repo '.claude') 'agents'
+    New-Item -ItemType Directory -Force -Path $agentsDir | Out-Null
+    $scout = Join-Path $agentsDir 'scout.md'
+    $scoutLines = @('---', 'name: scout', 'description: "разведчик"', '---', '', 'разведать')
+    Set-Content -LiteralPath $scout -Encoding utf8 -Value $scoutLines
+
+    Check 'субагент базы довезён в копию и спрятан от git проекта' {
+        $r = Invoke-AgentsDeploy $repo
+        if ($r.code -ne 0) { return "код возврата $($r.code): $($r.text)" }
+        $dst = Join-Path $copyAgents 'scout.md'
+        if (-not (Test-Path -LiteralPath $dst -PathType Leaf)) { return 'файла в копии нет' }
+        if ((Get-Content -LiteralPath $dst -Raw) -cne (Get-Content -LiteralPath $scout -Raw)) { return 'файл копии не совпал с базой' }
+        $dirty = @(& git -C $repo status --porcelain | Where-Object { $_ })
+        if ($dirty.Count) { return "git копии видит разложенное: $($dirty -join '; ')" }
+        return $null
+    }
+
+    # Копия — производная: правка в ней не знание, а расхождение, и верна база.
+    Check 'правка в копии — находка сверки, прогон возвращает базу' {
+        Add-Content -LiteralPath (Join-Path $copyAgents 'scout.md') -Value 'правка мимо базы'
+        $problem = ExpectText $repo 'в копии разошлись с базой'
+        if ($problem) { return $problem }
+        $r = Invoke-AgentsDeploy $repo
+        if ($r.code -ne 0) { return "код возврата $($r.code): $($r.text)" }
+        if ((Get-Content -LiteralPath (Join-Path $copyAgents 'scout.md') -Raw) -cne (Get-Content -LiteralPath $scout -Raw)) { return 'копия не возвращена к базе' }
+        return ExpectNoText $repo 'в копии разошлись с базой'
+    }
+
+    Check 'имя занято отслеживаемым файлом проекта — файл проекта не тронут' {
+        $own = Join-Path $copyAgents 'guard.md'
+        Set-Content -LiteralPath $own -Encoding utf8 -Value '---', 'name: guard', '---', '', 'файл проекта'
+        & git -C $repo add -f -- '.claude/agents/guard.md' 2>$null | Out-Null
+        & git -C $repo commit -qm 'агент проекта' 2>$null | Out-Null
+        Set-Content -LiteralPath (Join-Path $agentsDir 'guard.md') -Encoding utf8 -Value '---', 'name: guard', '---', '', 'файл базы'
+        $r = Invoke-AgentsDeploy $repo
+        if ($r.code -ne 0) { return "код возврата $($r.code): $($r.text)" }
+        if ((Get-Content -LiteralPath $own -Raw) -notmatch 'файл проекта') { return 'файл проекта перезаписан' }
+        return ExpectText $repo 'имя занято отслеживаемым файлом проекта'
+    }
+
+    Check 'снятый из базы уходит из копии, файл проекта остаётся' {
+        Remove-Item -LiteralPath (Join-Path $agentsDir 'guard.md') -Force
+        Remove-Item -LiteralPath $scout -Force
+        $r = Invoke-AgentsDeploy $repo
+        if ($r.code -ne 0) { return "код возврата $($r.code): $($r.text)" }
+        if (Test-Path -LiteralPath (Join-Path $copyAgents 'scout.md')) { return 'снятый субагент остался в копии' }
+        if (-not (Test-Path -LiteralPath (Join-Path $copyAgents 'guard.md') -PathType Leaf)) { return 'файл проекта удалён' }
+        & git -C $repo rm -q --cached -- '.claude/agents/guard.md' 2>$null | Out-Null
+        & git -C $repo commit -qm 'агент проекта снят' 2>$null | Out-Null
+        Remove-Item -LiteralPath (Join-Path $copyAgents 'guard.md') -Force
+        Set-Content -LiteralPath $scout -Encoding utf8 -Value $scoutLines
+        return $null
+    }
+
+    # Новой копии субагенты нужны с первой секунды: без них флоу зовёт того, кого в ней нет.
+    Check 'заведённая рабочая копия получает субагентов базы' {
+        $out = (& pwsh -NoProfile -File $script:wtAdd -Path $repo -Name 'agents-copy' 2>&1 | Out-String)
+        if ($LASTEXITCODE -ne 0) { return "код возврата $LASTEXITCODE : $out" }
+        $fresh = Join-Path (Split-Path $repo -Parent) 'agents-copy'
+        $dst = Join-Path (Join-Path (Join-Path $fresh '.claude') 'agents') 'scout.md'
+        if (-not (Test-Path -LiteralPath $dst -PathType Leaf)) { return "субагента в новой копии нет: $out" }
+        $dirty = @(& git -C $fresh status --porcelain | Where-Object { $_ })
+        if ($dirty.Count) { return "git новой копии видит разложенное: $($dirty -join '; ')" }
+        return $null
+    }
+
+    # Связывание копии — тот же момент раскладки: у второй копии проекта субагенты в базе уже есть.
+    Check 'связанная копия получает субагентов базы' {
+        $late = Join-Path $root 'late'
+        New-TestRepo $late
+        $out = (& pwsh -NoProfile -File $link -Path $late -Base $base 2>&1 | Out-String)
+        if ($LASTEXITCODE -ne 0) { return "код возврата $LASTEXITCODE : $out" }
+        $dst = Join-Path (Join-Path (Join-Path $late '.claude') 'agents') 'scout.md'
+        if (-not (Test-Path -LiteralPath $dst -PathType Leaf)) { return "субагента в связанной копии нет: $out" }
+        $dirty = @(& git -C $late status --porcelain | Where-Object { $_ })
+        if ($dirty.Count) { return "git связанной копии видит разложенное: $($dirty -join '; ')" }
+        return $null
+    }
+
+    # Файл исключений у репозитория один на все копии и каталоги, а блоки в нём не общие.
+    Check 'монорепа — у каждого связанного каталога свой блок исключений' {
+        foreach ($pair in @(@($baseFoo, $modFoo, 'foo-scout'), @($baseBar, $modCase, 'case-scout'))) {
+            $dir = Join-Path $pair[0] 'agents'
+            New-Item -ItemType Directory -Force -Path $dir | Out-Null
+            Set-Content -LiteralPath (Join-Path $dir ($pair[2] + '.md')) -Encoding utf8 -Value '---', ('name: ' + $pair[2]), '---', '', 'разведать'
+            $r = Invoke-AgentsDeploy $pair[1]
+            if ($r.code -ne 0) { return "код возврата $($r.code): $($r.text)" }
+        }
+        foreach ($pair in @(@($modFoo, 'foo-scout'), @($modCase, 'case-scout'))) {
+            $dst = Join-Path (Join-Path (Join-Path $pair[0] '.claude') 'agents') ($pair[1] + '.md')
+            if (-not (Test-Path -LiteralPath $dst -PathType Leaf)) { return "нет $($pair[1]) в $($pair[0])" }
+        }
+        $exclude = Get-Content -LiteralPath (Join-Path (Join-Path (Join-Path $mono '.git') 'info') 'exclude') -Raw
+        foreach ($line in '/packages/foo/.claude/agents/foo-scout.md', '/mixed/case/.claude/agents/case-scout.md') {
+            if ($exclude -notmatch [regex]::Escape($line)) { return "в исключениях нет строки $line" }
+        }
+        $dirty = @(& git -C $mono status --porcelain | Where-Object { $_ })
+        if ($dirty.Count) { return "git монорепы видит разложенное: $($dirty -join '; ')" }
+        return $null
     }
 
     Move-Item -LiteralPath $base -Destination $moved

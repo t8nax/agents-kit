@@ -15,6 +15,7 @@
 # базы: подача корня везла бы в каждую сессию любой положенный туда .md.
 $script:KitServedFiles = @('product.md', 'boundaries.md')
 $script:KitDecisionsDir = 'decisions'
+$script:KitAgentsDir = 'agents'
 
 function New-KitFinding([string]$Severity, [string]$File, [string]$Message, [string]$Kind = '') {
     return [pscustomobject]@{ severity = $Severity; file = $File; message = $Message; kind = $Kind }
@@ -780,18 +781,73 @@ function Get-KitWorkFindings([string]$Base, [string]$Worktree, $Ceilings) {
     }
 }
 
+# Имя субагента — строка «name:» его заголовка: по ней его зовёт флоу, и по ней же кит
+# сводит файл базы с файлом копии.
+function Get-KitAgentName([string]$Path) {
+    try { $head = Get-Content -LiteralPath $Path -TotalCount 40 -ErrorAction Stop } catch { return $null }
+    foreach ($line in $head) {
+        if ($line -match '^\s*name\s*:\s*["'']?([^"''#]+?)["'']?\s*$') { return $Matches[1] }
+    }
+    return $null
+}
+
+# Субагенты базы и то, что из них довезено в эту копию. Красная — файл, по которому субагента
+# не позвать: имя файла и строка «name:» адресуют его вместе. Расхождение раскладки — одна
+# строка на вид: чинит его прогон скрипта, а не правка базы.
+function Get-KitAgentFindings([string]$Base, [string]$Worktree) {
+    $dir = Join-Path $Base $script:KitAgentsDir
+    $sources = [ordered]@{}
+    foreach ($item in @(Get-ChildItem -LiteralPath $dir -Force -ErrorAction SilentlyContinue)) {
+        $label = Get-KitRelativePath $Base (ConvertTo-KitPath $item.FullName)
+        if ($item.PSIsContainer) { New-KitFinding 'WARN' $label "подкаталог в $($script:KitAgentsDir)/ — субагенты лежат плоско, файлом на субагента"; continue }
+        if ($item.Extension -ine '.md') { New-KitFinding 'WARN' $label "не .md в $($script:KitAgentsDir)/ — каталог держит только субагентов"; continue }
+        $name = Get-KitAgentName (ConvertTo-KitPath $item.FullName)
+        if (-not $name) { New-KitFinding 'FAIL' $label 'нет строки «name:» — по ней субагента зовёт флоу'; continue }
+        if ($name -cne $item.BaseName) { New-KitFinding 'FAIL' $label "«name: $name» не совпадает с именем файла — зовут субагента по «name:», а кладут его файлом"; continue }
+        $sources[$item.Name] = ConvertTo-KitPath $item.FullName
+    }
+
+    if (-not $Worktree) { return }
+    $target = Get-KitAgentDir $Worktree
+    if (-not $sources.Count -and -not (Test-Path -LiteralPath $target -PathType Container)) { return }
+
+    $tracked = @(Get-KitTrackedAgents $Worktree)
+    $groups = [ordered]@{}
+    foreach ($name in @($sources.Keys)) {
+        if ($tracked -contains $name) {
+            Add-KitGroupedFinding $groups 'WARN' 'имя занято отслеживаемым файлом проекта' 'кит такой файл не трогает — развести имена' $name
+            continue
+        }
+        $dst = Join-Path $target $name
+        if (-not (Test-Path -LiteralPath $dst -PathType Leaf)) {
+            Add-KitGroupedFinding $groups 'WARN' 'в эту копию не довезены' 'agents-deploy.ps1' $name
+            continue
+        }
+        if ((Get-KitAgentText $dst) -cne (Get-KitAgentText $sources[$name])) {
+            Add-KitGroupedFinding $groups 'WARN' 'в копии разошлись с базой' 'верна база — agents-deploy.ps1' $name
+        }
+    }
+
+    # Разложенное прежним прогоном, чего в базе уже нет: сессия позвала бы снятого субагента.
+    foreach ($name in @(Get-KitDeployedAgents $Worktree)) {
+        if ($sources.Contains($name)) { continue }
+        if (-not (Test-Path -LiteralPath (Join-Path $target $name) -PathType Leaf)) { continue }
+        Add-KitGroupedFinding $groups 'WARN' 'остались в копии от прежней раскладки' 'уберёт agents-deploy.ps1' $name
+    }
+
+    Get-KitGroupedFindings $groups $script:KitAgentsDir
+}
+
 # Субагенты рабочей копии и пользователя. Субагенты плагинов не видны, поэтому
 # ненайденный исполнитель или помощник — WARN.
 function Get-KitVisibleAgents([string]$Worktree) {
     $names = @{}
     $dirs = @((Join-Path $HOME '.claude\agents'))
-    if ($Worktree) { $dirs += Join-Path $Worktree '.claude\agents' }
+    if ($Worktree) { $dirs += Get-KitAgentDir $Worktree }
     foreach ($dir in $dirs) {
         foreach ($file in @(Get-ChildItem -LiteralPath $dir -Filter '*.md' -File -ErrorAction SilentlyContinue)) {
-            try { $head = Get-Content -LiteralPath $file.FullName -TotalCount 40 -ErrorAction Stop } catch { continue }
-            foreach ($line in $head) {
-                if ($line -match '^\s*name\s*:\s*["'']?([^"''#]+?)["'']?\s*$') { $names[$Matches[1]] = $true; break }
-            }
+            $name = Get-KitAgentName $file.FullName
+            if ($name) { $names[$name] = $true }
         }
     }
     return $names
@@ -960,6 +1016,7 @@ function Get-KitBaseFindings([string]$Base, [string]$Worktree) {
     Get-KitGitFindings $Base
     Get-KitRootFindings $Base $rules
     Get-KitDecisionFindings $Base $rules
+    Get-KitAgentFindings $Base $Worktree
     Get-KitFlowFindings $Base $Worktree $rules
     Get-KitWorkFindings $Base $Worktree $rules
 

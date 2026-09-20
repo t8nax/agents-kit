@@ -78,3 +78,12 @@ if ($state.scope) {
     Write-Host "Сессию открывать в:     $(Join-KitScope $target $state.scope)"
 }
 Write-Host "Связь с базой общая с основной копией «$($state.workspace)» — link.ps1 не нужен."
+
+# Субагенты базы довозятся сразу: до этого флоу звало бы в новой копии исполнителя, которого
+# в ней нет. Не вышло — копия всё равно заведена, и сказать об этом важнее, чем упасть.
+$copy = Join-KitScope $target $state.scope
+if (Test-Path -LiteralPath $copy -PathType Container) {
+    Write-Host ''
+    try { & (Join-Path $PSScriptRoot 'agents-deploy.ps1') -Path $copy }
+    catch { Write-Host "Субагентов базы довезти не удалось: $($_.Exception.Message) — прогнать agents-deploy.ps1 в копии" -ForegroundColor Yellow }
+}
