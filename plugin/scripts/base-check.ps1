@@ -21,13 +21,19 @@ function New-KitFinding([string]$Severity, [string]$File, [string]$Message, [str
 }
 
 # Файл базы, как его видит сессия: этот текст берут и подача, и потолок. Комментарии
-# вырезаются — пример из шаблона иначе приехал бы фактом проекта. Нечитаемый файл —
-# пустая строка, а не исключение: иначе хук оставил бы сессию без всей базы.
+# вырезаются — пример из шаблона иначе приехал бы фактом проекта. Читается он и с диска,
+# и из истории базы, поэтому разбор отделён от чтения: иначе прошлая версия памяти
+# сверялась бы не с тем текстом, который видела сессия. Нечитаемый файл — пустая строка,
+# а не исключение: иначе хук оставил бы сессию без всей базы.
+function ConvertTo-KitMarkdown([string]$Text) {
+    if (-not $Text) { return '' }
+    $Text = [regex]::Replace($Text, '(?s)<!--.*?-->', '')
+    return ([regex]::Replace($Text, '(\r?\n[ \t]*){3,}', "`n`n")).Trim()
+}
+
 function Read-KitMarkdown([string]$Path) {
     try { $text = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop } catch { return '' }
-    if (-not $text) { return '' }
-    $text = [regex]::Replace($text, '(?s)<!--.*?-->', '')
-    return ([regex]::Replace($text, '(\r?\n[ \t]*){3,}', "`n`n")).Trim()
+    return ConvertTo-KitMarkdown $text
 }
 
 # Имя проекта для шапки подачи; где оно живёт — reference\base-layout.md. Хвост
@@ -608,6 +614,59 @@ function Get-KitTakenRecordFindings([string]$Base, [string]$Path, [string]$Label
     New-KitFinding 'FAIL' 'backlog.md' "запись B-$n взята — память «$Label» живёт, а запись осталась: $fix"
 }
 
+# Ответ оператора вбирается и удаляется вместе с вопросом тем же обновлением, поэтому в коммит
+# заполненный «ответ:» не уезжает: уехал — обновление сделано наполовину. На диске он законен —
+# оператор только что его дописал, а сессия ещё не проснулась, — и сверка на старте о нём молчит.
+function Get-KitAnsweredQuestionFindings([string]$Path, [string]$Label) {
+    foreach ($q in @(Get-KitOperatorQuestions (Read-KitMarkdown $Path) | Where-Object { $_.answered })) {
+        $short = $q.text
+        if ($short.Length -gt 60) { $short = $short.Substring(0, 60) + '…' }
+        New-KitFinding 'FAIL' $Label "вопрос «$short» с заполненным «ответ:» — ответ не вобран: вобрать, удалить вопрос вместе со строкой в «Агенту → Вопросы» и повторить коммит"
+    }
+}
+
+# Отметка стадии в «Флоу»: номер стадии — стоит ли отметка. Сравниваются отметки, а не строки:
+# строка меняется и от дописанного выхода, а переход виден только сменой отметки.
+function Get-KitFlowMarks([string]$Text) {
+    $marks = @{}
+    foreach ($m in [regex]::Matches((Get-KitLayoutSection $Text '### Флоу'), '(?m)^\s*-\s*\[([ xX])\]\s*(\d+)\.')) {
+        $marks[$m.Groups[2].Value] = ($m.Groups[1].Value -ne ' ')
+    }
+    return $marks
+}
+
+function Get-KitStepLines([string]$Text) {
+    return @([regex]::Matches((Get-KitLayoutSection $Text '### Шаги'), '(?m)^\s*-\s*\[[ xX]\]\s*(.+?)\s*$') | ForEach-Object { $_.Groups[1].Value })
+}
+
+# Коммит, в котором сменились отметки «Флоу», несёт переход или возврат, а шаги покинутой стадии
+# уходят тем же обновлением: уцелевшая строка значит либо что их не убрали, либо что память
+# коммитится не сразу после пройденной стадии. Прошлая версия берётся из HEAD базы; нет её —
+# это коммит взятия или база без истории, и сверять не с чем.
+function Get-KitLeftoverStepFindings([string]$Base, [string]$Path, [string]$Label) {
+    $previous = & git -C $Base show "HEAD:$($Label.Replace([char]92, [char]47))" 2>$null
+    if ($LASTEXITCODE -ne 0 -or -not $previous) { return }
+
+    $was = ConvertTo-KitMarkdown ($previous -join "`n")
+    $now = Read-KitMarkdown $Path
+    $wasMarks = Get-KitFlowMarks $was
+    $nowMarks = Get-KitFlowMarks $now
+    $moved = $false
+    foreach ($number in @($wasMarks.Keys) + @($nowMarks.Keys)) {
+        if ($wasMarks[$number] -ne $nowMarks[$number]) { $moved = $true; break }
+    }
+    if (-not $moved) { return }
+
+    $before = @{}
+    foreach ($line in Get-KitStepLines $was) { $before[$line] = $true }
+    $left = @(Get-KitStepLines $now | Where-Object { $before.ContainsKey($_) })
+    if (-not $left.Count) { return }
+
+    $short = $left[0]
+    if ($short.Length -gt 60) { $short = $short.Substring(0, 60) + '…' }
+    New-KitFinding 'FAIL' $Label "в «Шагах» осталось строк прежней стадии: $($left.Count), первая — «$short» — отметки «Флоу» сменились, а шаги покинутой стадии уходят тем же обновлением"
+}
+
 function Get-KitWorkFindings([string]$Base, [string]$Worktree, $Ceilings) {
     $work = Join-Path $Base 'work'
     if (-not (Test-Path -LiteralPath $work -PathType Container)) { return }
@@ -850,6 +909,8 @@ function Get-KitCommitFindings([string]$Base, [string]$Worktree, [string[]]$File
             # бэклога её не ищут — вырезать чужую запись коммит бэклога всё равно не может.
             if ($own -and $path -ieq $own) {
                 Get-KitOwnMemoryFindings $path $rel $Worktree $rules
+                Get-KitAnsweredQuestionFindings $path $rel
+                Get-KitLeftoverStepFindings $Base $path $rel
                 Get-KitTakenRecordFindings $Base $path $rel $Worktree
             }
             else { New-KitFinding 'FAIL' $rel 'память другой рабочей копии в коммите — не своя, решает оператор' }
