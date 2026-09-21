@@ -575,8 +575,28 @@ function Get-KitQuestionFindings([string]$Text, [string]$Label, $Rules) {
     }
 }
 
-# Разделы памяти и связь двух её частей. Строка агенту без своего критерия или вопроса —
-# не ошибка формы, а повод перечитать: WARN.
+function Test-KitAgentSubsection([string]$Text, [string]$Sub) {
+    return (Get-KitLayoutSection $Text '## Агенту') -match "(?m)^###\s+$([regex]::Escape($Sub))\s*$"
+}
+
+# Подраздел, где стоят строки стадий вне «Флоу». Без заголовка они уходят в предыдущий
+# подраздел — по шаблону это «Факты». «Шаги» не смотрятся: шаг тоже может начинаться
+# с цифры, а у строк остальных подразделов по шаблону галочки нет.
+function Find-KitStrayStageSection([string]$Text) {
+    $section = $null
+    foreach ($line in ($Text -split '\r?\n')) {
+        $heading = [regex]::Match($line, '^###\s+(.+?)\s*$')
+        if ($heading.Success) { $section = $heading.Groups[1].Value; continue }
+        if ($line -match '^##?\s') { $section = $null; continue }
+        if (-not $section -or $section -in 'Флоу', 'Шаги') { continue }
+        if ($line -match '^\s*-\s*\[[ xX]\]\s*\d+\.\s') { return $section }
+    }
+    return $null
+}
+
+# Разделы памяти и связь двух её частей. Без «Флоу» и «Шагов» молча выключается сверка
+# хода задачи — FAIL; строка агенту без своего критерия или вопроса — не ошибка формы,
+# а повод перечитать: WARN.
 function Get-KitMemoryLayoutFindings([string]$Text, [string]$Label) {
     foreach ($section in 'Критерии закрытия', 'Оператору', 'Агенту') {
         if ($Text -notmatch "(?m)^##\s+$([regex]::Escape($section))\s*$") {
@@ -585,9 +605,14 @@ function Get-KitMemoryLayoutFindings([string]$Text, [string]$Label) {
     }
     $agent = Get-KitLayoutSection $Text '## Агенту'
     foreach ($sub in 'Критерии', 'Вопросы', 'Факты', 'Флоу', 'Шаги') {
-        if ($agent -notmatch "(?m)^###\s+$([regex]::Escape($sub))\s*$") {
+        if (Test-KitAgentSubsection $Text $sub) { continue }
+        if ($sub -notin 'Флоу', 'Шаги') {
             New-KitFinding 'WARN' $Label "нет подраздела «### $sub» в «Агенту» из шаблона памяти"
+            continue
         }
+        $stray = if ($sub -eq 'Флоу') { Find-KitStrayStageSection $Text } else { $null }
+        if ($stray) { New-KitFinding 'FAIL' $Label "нет подраздела «### $sub» в «Агенту» — строки стадий стоят в «### $stray»: вернуть заголовок над ними" }
+        else { New-KitFinding 'FAIL' $Label "нет подраздела «### $sub» в «Агенту» из шаблона памяти" }
     }
 
     $criteria = @([regex]::Matches((Get-KitLayoutSection $Text '## Критерии закрытия'), '(?m)^###\s+(\d+)\.') | ForEach-Object { $_.Groups[1].Value })
@@ -636,6 +661,8 @@ function Test-KitFlowMatchesMemory($Flow, [string]$Text) {
 
 # Флоу задачи: строка есть и называет флоу из flow.md. Разошедшийся со списком флоу перечень
 # стадий — WARN: флоу могли поправить посреди задачи, и решает это сессия с оператором.
+# Стадий ноль — FAIL, и сравнения со списком нет: у пустого «Флоу» одна причина, а не правка
+# флоу. Нет самого заголовка — причину уже назвала находка формы памяти.
 # Имени нет — флоу переименован или удалён; кандидата на новое имя сверка называет, но строку
 # не правит: удалённый флоу с теми же стадиями неотличим от переименованного.
 function Get-KitMemoryFlowFindings([string]$Base, [string]$Text, [string]$Label) {
@@ -654,6 +681,13 @@ function Get-KitMemoryFlowFindings([string]$Base, [string]$Text, [string]$Label)
         else {
             New-KitFinding 'FAIL' $Label "«флоу: $name» — такого флоу в $($script:KitFlowFile) нет: переименован — поправить строку «флоу:» на новое имя и перенести во «Флоу» памяти его стадии; удалён — вопрос оператору"
         }
+        return
+    }
+    if (-not (Test-KitAgentSubsection $Text 'Флоу')) { return }
+    if (-not @(Get-KitMemoryFlowStages $Text).Count) {
+        $stray = Find-KitStrayStageSection $Text
+        if ($stray) { New-KitFinding 'FAIL' $Label "в «Агенту → Флоу» нет ни одной стадии — строки стадий стоят в «### $stray»: перенести их во «Флоу»" }
+        else { New-KitFinding 'FAIL' $Label "в «Агенту → Флоу» нет ни одной стадии — переписать стадии флоу «$($flow.name)» из $($script:KitFlowFile)" }
         return
     }
     if (-not (Test-KitFlowMatchesMemory $flow $Text)) {
@@ -684,8 +718,9 @@ function Get-KitOwnMemoryFindings([string]$Base, [string]$Path, [string]$Label, 
     Get-KitMemoryLayoutFindings $text $Label
     Get-KitMemoryFlowFindings $Base $text $Label
 
-    # Нарезка видна и без коммита: на старте эту проверку зовёт подача.
-    if (@((Get-KitFlowMarks $text).Values | Where-Object { -not $_ }).Count -and -not @(Get-KitStepLines $text).Count) {
+    # Нарезка видна и без коммита: на старте эту проверку зовёт подача. Без заголовка «Шагов»
+    # строки шагов не видны, и пропажу называет находка формы памяти.
+    if ((Test-KitAgentSubsection $text 'Шаги') -and @((Get-KitFlowMarks $text).Values | Where-Object { -not $_ }).Count -and -not @(Get-KitStepLines $text).Count) {
         New-KitFinding 'FAIL' $Label 'во «Флоу» есть неотмеченная стадия, а «Шаги» пусты — работа открытой стадии режется строками до работы'
     }
 
@@ -828,6 +863,9 @@ function Get-KitStepFindings([string]$Base, [string]$Path, [string]$Label) {
     if ($wasFlow -and -not $renamed -and (ConvertTo-KitTitleKey $wasFlow) -ne (ConvertTo-KitTitleKey $nowFlow)) {
         New-KitFinding 'FAIL' $Label "«флоу:» сменилась с «$wasFlow» на «$nowFlow» — флоу задачи не меняется: флоу переименован — перенести во «Флоу» памяти его стадии тем же коммитом; задача переросла флоу — вопрос оператору о сужении критерия"
     }
+    # Без заголовка «Шагов» в одной из версий шаги не сравнить: пропажу называет находка формы
+    # памяти, а коммит, который возвращает заголовок, — починка, а не новые шаги.
+    if (-not (Test-KitAgentSubsection $was 'Шаги') -or -not (Test-KitAgentSubsection $now 'Шаги')) { return }
     $wasSteps = @(Get-KitStepLines $was)
     $before = @{}
     foreach ($step in $wasSteps) { $before[$step.text] = $step }
@@ -838,7 +876,10 @@ function Get-KitStepFindings([string]$Base, [string]$Path, [string]$Label) {
     $nowMarks = Get-KitFlowMarks $now
     $moved = $false
     $returned = $false
-    foreach ($number in @($wasMarks.Keys) + @($nowMarks.Keys)) {
+    # Пропажа или возврат раздела стадий — не переход: пропажу называет находка формы памяти.
+    $marked = @($wasMarks.Keys) + @($nowMarks.Keys)
+    if (-not $wasMarks.Count -or -not $nowMarks.Count) { $marked = @() }
+    foreach ($number in $marked) {
         if ($wasMarks[$number] -eq $nowMarks[$number]) { continue }
         $moved = $true
         # Возврат снимает отметку, переход ставит: недоделанное покинутой стадии возврат

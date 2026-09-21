@@ -505,6 +505,67 @@ try {
         return $null
     }
 
+    # Потерянный раздел стадий выключил бы сверку хода задачи молча. Строки стадий без заголовка
+    # уходят в предыдущий подраздел.
+    Set-Content -LiteralPath $renFlow -Encoding utf8 -Value (@('# Флоу', '') + $renFull + $renDocs)
+    $renHead = @('# Разбор накладной', "рабочая копия: $renRepo", 'флоу: полный', '', '## Агенту', '')
+    $renStageLines = @('- [ ] 1. Реализация', '- [ ] 2. Ревью', '')
+    $renSteps = @('### Шаги', '- [ ] дочитать формат позиции')
+    $renNoFlow = $renHead + @('### Факты', '- формат позиции известен') + $renStageLines + $renSteps
+
+    Check 'память без «### Флоу», стадии под «Фактами» — красная находка называет, где они' {
+        Set-Content -LiteralPath $renMem -Encoding utf8 -Value $renNoFlow
+        $problem = ExpectText $renRepo 'нет подраздела «### Флоу» в «Агенту» — строки стадий стоят в «### Факты»'
+        if (-not $problem) { $problem = ExpectNoText $renRepo 'разошлось со списком флоу' }
+        return $problem
+    }
+
+    Check 'во «Флоу» памяти ни одной стадии — красная находка' {
+        Set-Content -LiteralPath $renMem -Encoding utf8 -Value ($renHead + @('### Флоу', '') + $renSteps)
+        $problem = ExpectText $renRepo 'нет ни одной стадии'
+        if (-not $problem) { $problem = ExpectNoText $renRepo 'разошлось со списком флоу' }
+        return $problem
+    }
+
+    Check 'память без «### Шаги» — одна красная находка, о подразделе' {
+        Set-Content -LiteralPath $renMem -Encoding utf8 -Value ($renHead + @('### Флоу') + $renStageLines)
+        $problem = ExpectText $renRepo 'нет подраздела «### Шаги»'
+        if (-not $problem) { $problem = ExpectNoText $renRepo '«Шаги» пусты' }
+        return $problem
+    }
+
+    # Пропажа и возврат раздела стадий меняют отметки, но переходом не считаются.
+    Check 'коммит памяти: заголовок «Флоу» стёрт, шаги уцелели — не переход' {
+        & $renMemory 'полный'
+        & git -C $renBase add -A 2>$null
+        & git -C $renBase commit -qm 'флоу памяти' | Out-Null
+        Set-Content -LiteralPath $renMem -Encoding utf8 -Value $renNoFlow
+        $reason = Invoke-CommitGate $renRepo $renCommit
+        if ($reason -match 'прежней стадии') { return "гейт принял пропажу за переход: $reason" }
+        if ($reason -notmatch 'нет подраздела «### Флоу»') { return "гейт не назвал пропажу: «$reason»" }
+        return $null
+    }
+
+    Check 'коммит памяти: заголовок «Флоу» вернули — не переход' {
+        & git -C $renBase add -A 2>$null
+        & git -C $renBase commit -qm 'заголовок потерян' | Out-Null
+        & $renMemory 'полный'
+        $reason = Invoke-CommitGate $renRepo $renCommit
+        if ($reason -match 'прежней стадии') { return "гейт принял возврат заголовка за переход: $reason" }
+        return $null
+    }
+
+    Check 'коммит памяти: заголовок «Шаги» вернули над закрытым шагом — не новые шаги' {
+        Set-Content -LiteralPath $renMem -Encoding utf8 -Value ($renHead + @('### Флоу') + $renStageLines + @('- [ ] дочитать формат позиции'))
+        & git -C $renBase add -A 2>$null
+        & git -C $renBase commit -qm 'заголовок шагов потерян' | Out-Null
+        Set-Content -LiteralPath $renMem -Encoding utf8 -Value ($renHead + @('### Флоу') + $renStageLines +
+            @('### Шаги', '- [x] дочитать формат позиции — результат: формат в a.txt — проверен: прочитан файл'))
+        $reason = Invoke-CommitGate $renRepo $renCommit
+        if ($reason -match 'появилась уже закрытой') { return "гейт принял возврат заголовка за новые шаги: $reason" }
+        return $null
+    }
+
     Copy-Item -LiteralPath $repo -Destination $copy -Recurse -Force
     Check 'копия каталога вместе с .git — остановка' { ExpectText $copy 'не числит эту копию' }
     Check 'копия каталога вместе с .git — отчёт link.ps1 красный' { ExpectLinkReport $copy 1 'связь односторонняя' }
