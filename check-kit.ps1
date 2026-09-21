@@ -304,6 +304,46 @@ try {
         return $problem
     }
 
+    # Возврат пишет флоу: одна стадия «Ревью» возвращает в каждом флоу на своё. Лишняя стадия
+    # вне флоу показывает, что сверка флоу дошла до подачи.
+    Check 'возврат под пунктом флоу на стадию раньше — сверка проходит' {
+        $flow = Join-Path $base 'flow\flow.md'
+        $stages = Join-Path $base 'flow\stages'
+        $saved = Get-Content -LiteralPath $flow -Raw
+        New-Item -ItemType Directory -Force -Path $stages | Out-Null
+        Set-Content -LiteralPath $flow -Encoding utf8 -Value '# Флоу', '',
+            '## полный', 'когда: новая возможность', '1. [Реализация](stages/impl.md)', '2. [Ревью](stages/review.md)', '   - возврат: замечания — стадия «Реализация»', '',
+            '## документация', 'когда: правка текстов', '1. [Написание](stages/writing.md)', '2. [Ревью](stages/review.md)', '   - возврат: замечания — стадия «Написание»'
+        foreach ($s in @(@('impl', 'Реализация'), @('review', 'Ревью'), @('writing', 'Написание'), @('spare', 'Запасная'))) {
+            Set-Content -LiteralPath (Join-Path $stages "$($s[0]).md") -Encoding utf8 `
+                -Value "# $($s[1])", '', 'исполнитель: оркестратор', 'выход: коммит'
+        }
+        $problem = ExpectText $repo 'стадия не входит ни в один флоу'
+        if (-not $problem) { $problem = ExpectNoText $repo 'пункт 2: возврат' }
+        if (-not $problem) { $problem = ExpectNoText $repo 'не возврат' }
+        Set-Content -LiteralPath $flow -Encoding utf8 -Value $saved -NoNewline
+        Remove-Item -LiteralPath $stages -Recurse -Force
+        return $problem
+    }
+
+    Check 'возврат на стадию, которой нет в этом флоу, — сверка называет' {
+        $flow = Join-Path $base 'flow\flow.md'
+        $stages = Join-Path $base 'flow\stages'
+        $saved = Get-Content -LiteralPath $flow -Raw
+        New-Item -ItemType Directory -Force -Path $stages | Out-Null
+        Set-Content -LiteralPath $flow -Encoding utf8 -Value '# Флоу', '',
+            '## полный', 'когда: новая возможность', '1. [Реализация](stages/impl.md)', '2. [Ревью](stages/review.md)', '',
+            '## документация', 'когда: правка текстов', '1. [Ревью](stages/review.md)', '   - возврат: замечания — стадия «Реализация»'
+        foreach ($s in @(@('impl', 'Реализация'), @('review', 'Ревью'))) {
+            Set-Content -LiteralPath (Join-Path $stages "$($s[0]).md") -Encoding utf8 `
+                -Value "# $($s[1])", '', 'исполнитель: оркестратор', 'выход: коммит'
+        }
+        $problem = ExpectText $repo 'в этом флоу её нет'
+        Set-Content -LiteralPath $flow -Encoding utf8 -Value $saved -NoNewline
+        Remove-Item -LiteralPath $stages -Recurse -Force
+        return $problem
+    }
+
     Check 'пример из HTML-комментария в контекст не попадает' { ExpectNoText $repo 'пример в комментарии шаблона' }
 
     # Решения подаются оглавлением: строка «когда:» приезжает, тело файла — нет.

@@ -942,15 +942,22 @@ function ConvertTo-KitTitleKey([string]$Name) {
 }
 
 # Флоу из flow.md: раздел «##» — флоу, строка «когда:» до его списка, пункты нумерованного
-# списка — ссылки на файлы стадий. Разбор без находок: его берут и сверка флоу, и сверка
-# памяти задачи, которая сводит свою строку «флоу:» со списком.
+# списка — ссылки на файлы стадий, строки «- возврат:» с отступом под пунктом — его возвраты.
+# Любая другая непустая строка под пунктом уходит в strays флоу: возврат с опечаткой, без
+# дефиса или без отступа иначе пропал бы молча. Разбор без находок: его берут и сверка флоу,
+# и сверка памяти задачи, которая сводит свою строку «флоу:» со списком.
 function Get-KitFlowList([string]$Base) {
     $flows = [System.Collections.Generic.List[object]]::new()
     $current = $null
     foreach ($line in ((Read-KitMarkdown (Join-Path $Base $script:KitFlowFile)) -split '\r?\n')) {
         $heading = [regex]::Match($line, '^##\s+(.+?)\s*$')
         if ($heading.Success) {
-            $current = [pscustomobject]@{ name = $heading.Groups[1].Value; when = $null; items = [System.Collections.Generic.List[object]]::new() }
+            $current = [pscustomobject]@{
+                name = $heading.Groups[1].Value
+                when = $null
+                items = [System.Collections.Generic.List[object]]::new()
+                strays = [System.Collections.Generic.List[object]]::new()
+            }
             $flows.Add($current)
             continue
         }
@@ -961,13 +968,21 @@ function Get-KitFlowList([string]$Base) {
             continue
         }
         $item = [regex]::Match($line, '^\s*(\d+)\.\s+(.*?)\s*$')
-        if (-not $item.Success) { continue }
+        if (-not $item.Success) {
+            if (-not $current.items.Count -or -not $line.Trim()) { continue }
+            $owner = $current.items[$current.items.Count - 1]
+            $return = [regex]::Match($line, '^\s+-\s+возврат\s*:\s*(.*?)\s*$')
+            if ($return.Success) { $owner.returns.Add($return.Groups[1].Value) }
+            else { $current.strays.Add([pscustomobject]@{ number = $owner.number; text = $line.Trim() }) }
+            continue
+        }
         $link = [regex]::Match($item.Groups[2].Value, "^\[([^\]]+)\]\(\s*$($script:KitStagesDir)/([^/\\)\s]+\.md)\s*\)$")
         $current.items.Add([pscustomobject]@{
             number = [int]$item.Groups[1].Value
             text = $item.Groups[2].Value
             title = $(if ($link.Success) { $link.Groups[1].Value } else { $null })
             file = $(if ($link.Success) { $link.Groups[2].Value } else { $null })
+            returns = [System.Collections.Generic.List[string]]::new()
         })
     }
     return $flows
@@ -981,7 +996,6 @@ function Read-KitStage([string]$Path, [string]$File) {
         label = "$($script:KitFlowDir)/$($script:KitStagesDir)/$File"
         name = $null
         keys = [ordered]@{}
-        returns = [System.Collections.Generic.List[string]]::new()
         body = [System.Collections.Generic.List[string]]::new()
     }
     $inKeys = $false
@@ -998,12 +1012,7 @@ function Read-KitStage([string]$Path, [string]$File) {
         if ($inKeys -and $line -notmatch '^\s*\d+(\.\d+)*\.\s') {
             $pair = [regex]::Match($line, '^([^\s:][^:]*?)\s*:\s*(.*?)\s*$')
             if ($pair.Success) {
-                $pairKey = $pair.Groups[1].Value
-                $pairValue = $pair.Groups[2].Value
-                # Возврат пишется строкой на каждый возврат, и все они нужны разом;
-                # прочие ключи идут по одной строке, и в $keys хватает последней.
-                if ($pairKey -eq 'возврат') { $stage.returns.Add($pairValue) }
-                $stage.keys[$pairKey] = $pairValue
+                $stage.keys[$pair.Groups[1].Value] = $pair.Groups[2].Value
                 continue
             }
         }
@@ -1016,9 +1025,10 @@ function Read-KitStage([string]$Path, [string]$File) {
 # Флоу и стадии: то, что не даст пройти стадию однозначно, — нет обязательного ключа, чужой
 # ключ, невидимый исполнитель или помощник, помощники не у оркестратора, пункт флоу не ведёт
 # в файл стадии или называет её не её заголовком, стадия дважды в одном флоу, ссылка номером
-# или на название, которого нет, две стадии с одним названием, возврат без условия, без
-# названия в кавычках, на стадию, которой нет, и возврат, который в каком-то флоу ведёт мимо
-# или не назад. Длину флоу сверка не проверяет; отсутствие flow.md назвала сверка каркаса.
+# или на название, которого нет, две стадии с одним названием, строка под пунктом флоу, которая
+# не возврат, возврат без условия, без названия в кавычках, на стадию, которой нет, и возврат,
+# который в своём флоу ведёт мимо или не назад. Длину флоу сверка не проверяет; отсутствие
+# flow.md назвала сверка каркаса.
 function Get-KitFlowFindings([string]$Base, [string]$Worktree, $Rules) {
     if (-not (Test-Path -LiteralPath (Join-Path $Base $script:KitFlowFile) -PathType Leaf)) { return }
     if (-not $Rules.flowKeys.Contains('исполнитель') -or -not $Rules.executors.Count) {
@@ -1092,6 +1102,46 @@ function Get-KitFlowFindings([string]$Base, [string]$Worktree, $Rules) {
             $order[$fileKey] = $order.Count
         }
         $orders += [pscustomobject]@{ name = $flow.name; order = $order }
+
+        foreach ($stray in $flow.strays) {
+            New-KitFinding 'FAIL' $script:KitFlowFile "${at}: пункт $($stray.number) — строка «$($stray.text)» не возврат; под пунктом стадии стоят только строки «- возврат:»"
+        }
+        # Направление — по месту в этом флоу: список собран целиком, и цель, стоящая ниже
+        # пункта, уже в $order.
+        foreach ($i in $flow.items) {
+            foreach ($return in $i.returns) {
+                $head = "${at}: пункт $($i.number)"
+                $numbered = [regex]::Matches($return, '(?i)\bстади[а-яё]*\s+(\d+)')
+                foreach ($ref in $numbered) {
+                    New-KitFinding 'FAIL' $script:KitFlowFile "${head}: возврат «$($ref.Value)» — на стадию ссылаются названием в кавычках"
+                }
+                $target = [regex]::Match($return, '(?i)\bстади[а-яё]*\s+«([^»]+)»')
+                if (-not $target.Success) {
+                    if (-not $numbered.Count) {
+                        New-KitFinding 'FAIL' $script:KitFlowFile "${head}: возврат «$return» — назад адресуются стадией и названием в кавычках"
+                    }
+                    continue
+                }
+                $targetName = $target.Groups[1].Value
+                if (-not $return.Substring(0, $target.Index).Trim([char[]]' —-:,')) {
+                    New-KitFinding 'FAIL' $script:KitFlowFile "${head}: возврат к стадии «$targetName» без условия"
+                }
+                $targetStage = $names[(ConvertTo-KitTitleKey $targetName)]
+                if (-not $targetStage) {
+                    New-KitFinding 'FAIL' $script:KitFlowFile "${head}: возврат к стадии «$targetName» — такой стадии нет"
+                    continue
+                }
+                $targetKey = $targetStage.file.ToLowerInvariant()
+                if (-not $order.Contains($targetKey)) {
+                    New-KitFinding 'FAIL' $script:KitFlowFile "${head}: возврат к стадии «$targetName» — в этом флоу её нет"
+                    continue
+                }
+                $fromKey = $(if ($i.file) { $i.file.ToLowerInvariant() } else { $null })
+                if ($fromKey -and $order.Contains($fromKey) -and $order[$targetKey] -ge $order[$fromKey]) {
+                    New-KitFinding 'FAIL' $script:KitFlowFile "${head}: возврат к стадии «$targetName» — она стоит не раньше: флоу вперёд не прыгает"
+                }
+            }
+        }
     }
 
     $agents = $null
@@ -1128,41 +1178,6 @@ function Get-KitFlowFindings([string]$Base, [string]$Worktree, $Rules) {
                     if (-not $flow.order.Contains($target.file.ToLowerInvariant())) {
                         New-KitFinding 'WARN' $label "ссылка на стадию «$name» — её нет во флоу «$($flow.name)», где стоит эта стадия"
                     }
-                }
-            }
-        }
-
-        # Возврат в описание стадии не попадает — он ключ, и правила ссылки его строку не
-        # видят. Направление проверяется в каждом флоу, где стоит стадия, по положению в списке:
-        # одна стадия стоит в разных флоу на разных местах.
-        foreach ($return in $stage.returns) {
-            $numbered = [regex]::Matches($return, '(?i)\bстади[а-яё]*\s+(\d+)')
-            foreach ($ref in $numbered) {
-                New-KitFinding 'FAIL' $label "возврат «$($ref.Value)» — на стадию ссылаются названием в кавычках"
-            }
-            $target = [regex]::Match($return, '(?i)\bстади[а-яё]*\s+«([^»]+)»')
-            if (-not $target.Success) {
-                if (-not $numbered.Count) {
-                    New-KitFinding 'FAIL' $label "возврат «$return» — назад адресуются стадией и названием в кавычках"
-                }
-                continue
-            }
-            $targetName = $target.Groups[1].Value
-            if (-not $return.Substring(0, $target.Index).Trim([char[]]' —-:,')) {
-                New-KitFinding 'FAIL' $label "возврат к стадии «$targetName» без условия"
-            }
-            $targetStage = $names[(ConvertTo-KitTitleKey $targetName)]
-            if (-not $targetStage) {
-                New-KitFinding 'FAIL' $label "возврат к стадии «$targetName» — такой стадии нет"
-                continue
-            }
-            $targetKey = $targetStage.file.ToLowerInvariant()
-            foreach ($flow in $in) {
-                if (-not $flow.order.Contains($targetKey)) {
-                    New-KitFinding 'FAIL' $label "возврат к стадии «$targetName» — во флоу «$($flow.name)» её нет"
-                }
-                elseif ($flow.order[$targetKey] -ge $flow.order[$fileKey]) {
-                    New-KitFinding 'FAIL' $label "возврат к стадии «$targetName» — во флоу «$($flow.name)» она не раньше: флоу вперёд не прыгает"
                 }
             }
         }
