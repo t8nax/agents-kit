@@ -8,8 +8,9 @@
   .gitignore        local/
   product.md
   boundaries.md
-  flow.md
-  stages/<слаг>.md
+  flow/
+    flow.md
+    stages/<слаг>.md
   backlog.md
   decisions/<область>.md
   agents/<имя субагента>.md

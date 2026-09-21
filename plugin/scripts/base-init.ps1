@@ -48,6 +48,12 @@ if ($probe) {
 
 if (-not $Name) { $Name = Split-Path $baseN -Leaf }
 
+# Файлы каркаса с путём от корня шаблона: каркас держит и подкаталоги.
+$templateN = ConvertTo-KitPath $template
+$templateFiles = @(Get-ChildItem -LiteralPath $template -File -Force -Recurse | ForEach-Object {
+        [pscustomobject]@{ FullName = $_.FullName; Name = (ConvertTo-KitPath $_.FullName).Substring($templateN.Length).TrimStart('\') }
+    })
+
 # Буквы номеров бэклога называет проект; выбрать их за него значило бы дать каждой базе одни
 # и те же. Вид букв — reference\backlog-record.md, «Номер». Нехватка ловится до создания
 # каталога и до первого файла: отказ не оставляет полубазы.
@@ -58,7 +64,7 @@ if ($Prefix) {
     $Prefix = $Prefix.ToUpperInvariant()
 }
 else {
-    foreach ($src in Get-ChildItem -LiteralPath $template -File -Force) {
+    foreach ($src in $templateFiles) {
         if (Test-Path -LiteralPath (Join-Path $baseN $src.Name) -PathType Leaf) { continue }
         if ((Get-Content -LiteralPath $src.FullName -Raw).Contains('<PREFIX>')) {
             throw "файлу каркаса «$($src.Name)» нужны буквы номеров бэклога — передать -Prefix <буквы>"
@@ -81,7 +87,7 @@ else {
 $added = 0
 $kept = 0
 $prefixUsed = $false
-foreach ($src in Get-ChildItem -LiteralPath $template -File -Force) {
+foreach ($src in $templateFiles) {
     $dst = Join-Path $baseN $src.Name
     if (Test-Path -LiteralPath $dst -PathType Leaf) {
         Write-Host "  уже есть, не тронут: $($src.Name)"
@@ -95,6 +101,7 @@ foreach ($src in Get-ChildItem -LiteralPath $template -File -Force) {
     }
     $text = $text.Replace('<PROJECT>', $Name)
     if ($PSCmdlet.ShouldProcess($dst, 'записать файл каркаса')) {
+        New-Item -ItemType Directory -Force -Path (Split-Path $dst -Parent) | Out-Null
         Set-Content -LiteralPath $dst -Value $text -Encoding utf8 -NoNewline
     }
     Write-Host "  заведён: $($src.Name)"

@@ -212,7 +212,7 @@ try {
     Check 'база заведена — каркас, репозиторий и коммит' {
         $r = Invoke-BaseInit $base
         if ($r.code -ne 0) { return "код возврата $($r.code): $($r.text)" }
-        foreach ($f in 'product.md', 'boundaries.md', 'flow.md', 'backlog.md', '.gitignore') {
+        foreach ($f in 'product.md', 'boundaries.md', 'flow\flow.md', 'backlog.md', '.gitignore') {
             if (-not (Test-Path -LiteralPath (Join-Path $base $f) -PathType Leaf)) { return "нет файла $f" }
         }
         if (-not (Test-Path -LiteralPath (Join-Path $base '.git') -PathType Container)) { return 'нет репозитория базы' }
@@ -280,8 +280,8 @@ try {
 
     # Флоу и стадии нужны только /drive, и в каждую сессию они не приезжают.
     Check 'флоу и стадии базы — в контекст не попадают' {
-        $flow = Join-Path $base 'flow.md'
-        $stages = Join-Path $base 'stages'
+        $flow = Join-Path $base 'flow\flow.md'
+        $stages = Join-Path $base 'flow\stages'
         $saved = Get-Content -LiteralPath $flow -Raw
         New-Item -ItemType Directory -Force -Path $stages | Out-Null
         Set-Content -LiteralPath $flow -Encoding utf8 -Value '# Флоу', '', '## Метка флоу вне подачи', '1. [Ветка](stages/branch.md)'
@@ -296,7 +296,7 @@ try {
 
     # Пункт флоу адресует стадию файлом: оборванная ссылка оставила бы флоу без стадии молча.
     Check 'флоу ведёт на файл стадии, которого нет, — сверка называет' {
-        $flow = Join-Path $base 'flow.md'
+        $flow = Join-Path $base 'flow\flow.md'
         $saved = Get-Content -LiteralPath $flow -Raw
         Set-Content -LiteralPath $flow -Encoding utf8 -Value '# Флоу', '', '## полный', '1. [Ветка](stages/branch.md)'
         $problem = ExpectText $repo 'такого файла нет'

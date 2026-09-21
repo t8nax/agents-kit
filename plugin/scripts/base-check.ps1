@@ -16,6 +16,10 @@
 $script:KitServedFiles = @('product.md', 'boundaries.md')
 $script:KitDecisionsDir = 'decisions'
 $script:KitAgentsDir = 'agents'
+# Флоу — каталог: flow.md со списками и stages/ с файлами стадий. Ссылка в списке ведёт
+# в stages/ от flow.md.
+$script:KitFlowDir = 'flow'
+$script:KitFlowFile = 'flow/flow.md'
 $script:KitStagesDir = 'stages'
 
 function New-KitFinding([string]$Severity, [string]$File, [string]$Message, [string]$Kind = '') {
@@ -179,11 +183,14 @@ function Get-KitLayoutRules {
     return $result
 }
 
-# Известные файлы корня берутся из каркаса, а не перечисляются здесь: новый файл
-# шаблона становится известным сверке без её правки.
+# Файлы каркаса — путём от корня базы — берутся из шаблона, а не перечисляются здесь: новый
+# файл шаблона становится известным сверке без её правки.
 function Get-KitTemplateNames {
-    $template = Join-Path $PSScriptRoot '..\template\base'
-    try { return @(Get-ChildItem -LiteralPath $template -File -Force -ErrorAction Stop | ForEach-Object { $_.Name }) }
+    $template = ConvertTo-KitPath (Join-Path $PSScriptRoot '..\template\base')
+    try {
+        return @(Get-ChildItem -LiteralPath $template -File -Force -Recurse -ErrorAction Stop |
+                ForEach-Object { (ConvertTo-KitPath $_.FullName).Substring($template.Length).TrimStart('\') })
+    }
     catch { return @() }
 }
 
@@ -465,7 +472,7 @@ function Get-KitBacklogFindings([string]$Path, [string]$Label, $Rules) {
     Get-KitBacklogFieldFindings $Label ($head -join "`n") $entries $Rules
 }
 
-# Файлы корня: каркас на месте, подаваемые в потолке, бэклог сходится со счётчиком и перечнем полей.
+# Каркас на месте, файлы корня: подаваемые в потолке, бэклог сходится со счётчиком и перечнем полей.
 # О файлах сверх каркаса сверка молчит.
 function Get-KitRootFindings([string]$Base, $Ceilings) {
     foreach ($name in Get-KitTemplateNames) {
@@ -625,13 +632,13 @@ function Get-KitMemoryFlowFindings([string]$Base, [string]$Text, [string]$Label)
     }
     $flow = @(Get-KitFlowList $Base | Where-Object { (ConvertTo-KitTitleKey $_.name) -eq (ConvertTo-KitTitleKey $name) }) | Select-Object -First 1
     if (-not $flow) {
-        New-KitFinding 'FAIL' $Label "«флоу: $name» — такого флоу в flow.md нет"
+        New-KitFinding 'FAIL' $Label "«флоу: $name» — такого флоу в $($script:KitFlowFile) нет"
         return
     }
     $want = @(for ($i = 0; $i -lt $flow.items.Count; $i++) { "$($i + 1). $(ConvertTo-KitTitleKey $flow.items[$i].title)" })
     $have = @(Get-KitMemoryFlowStages $Text)
     if (($want -join "`n") -ne ($have -join "`n")) {
-        New-KitFinding 'WARN' $Label "«Агенту → Флоу» разошлось со списком флоу «$($flow.name)» в flow.md — флоу могли поправить посреди задачи: перечитать и решить с оператором"
+        New-KitFinding 'WARN' $Label "«Агенту → Флоу» разошлось со списком флоу «$($flow.name)» в $($script:KitFlowFile) — флоу могли поправить посреди задачи: перечитать и решить с оператором"
     }
 }
 
@@ -940,7 +947,7 @@ function ConvertTo-KitTitleKey([string]$Name) {
 function Get-KitFlowList([string]$Base) {
     $flows = [System.Collections.Generic.List[object]]::new()
     $current = $null
-    foreach ($line in ((Read-KitMarkdown (Join-Path $Base 'flow.md')) -split '\r?\n')) {
+    foreach ($line in ((Read-KitMarkdown (Join-Path $Base $script:KitFlowFile)) -split '\r?\n')) {
         $heading = [regex]::Match($line, '^##\s+(.+?)\s*$')
         if ($heading.Success) {
             $current = [pscustomobject]@{ name = $heading.Groups[1].Value; when = $null; items = [System.Collections.Generic.List[object]]::new() }
@@ -971,7 +978,7 @@ function Get-KitFlowList([string]$Base) {
 function Read-KitStage([string]$Path, [string]$File) {
     $stage = [pscustomobject]@{
         file = $File
-        label = "$($script:KitStagesDir)/$File"
+        label = "$($script:KitFlowDir)/$($script:KitStagesDir)/$File"
         name = $null
         keys = [ordered]@{}
         returns = [System.Collections.Generic.List[string]]::new()
@@ -1013,9 +1020,9 @@ function Read-KitStage([string]$Path, [string]$File) {
 # названия в кавычках, на стадию, которой нет, и возврат, который в каком-то флоу ведёт мимо
 # или не назад. Длину флоу сверка не проверяет; отсутствие flow.md назвала сверка каркаса.
 function Get-KitFlowFindings([string]$Base, [string]$Worktree, $Rules) {
-    if (-not (Test-Path -LiteralPath (Join-Path $Base 'flow.md') -PathType Leaf)) { return }
+    if (-not (Test-Path -LiteralPath (Join-Path $Base $script:KitFlowFile) -PathType Leaf)) { return }
     if (-not $Rules.flowKeys.Contains('исполнитель') -or -not $Rules.executors.Count) {
-        New-KitFinding 'FAIL' 'flow.md' 'перечень ключей стадии не разобран — таблица в разделе «Стадия» flow-stages.md кита'
+        New-KitFinding 'FAIL' $script:KitFlowFile 'перечень ключей стадии не разобран — таблица в разделе «Стадия» flow-stages.md кита'
         return
     }
 
@@ -1023,9 +1030,9 @@ function Get-KitFlowFindings([string]$Base, [string]$Worktree, $Rules) {
     # остаётся связным и ведёт в чужую стадию молча. Отсюда и запрет одинаковых названий.
     $stages = [ordered]@{}
     $names = @{}
-    $dir = Join-Path $Base $script:KitStagesDir
+    $dir = Join-Path (Join-Path $Base $script:KitFlowDir) $script:KitStagesDir
     foreach ($item in @(Get-ChildItem -LiteralPath $dir -Force -ErrorAction SilentlyContinue | Sort-Object Name)) {
-        $label = "$($script:KitStagesDir)/$($item.Name)"
+        $label = "$($script:KitFlowDir)/$($script:KitStagesDir)/$($item.Name)"
         if ($item.PSIsContainer) { New-KitFinding 'WARN' $label "подкаталог в $($script:KitStagesDir)/ — стадии лежат плоско, файлом на стадию"; continue }
         if ($item.Extension -ine '.md') { New-KitFinding 'WARN' $label "не .md в $($script:KitStagesDir)/ — каталог держит только стадии"; continue }
         $stage = Read-KitStage $item.FullName $item.Name
@@ -1042,44 +1049,44 @@ function Get-KitFlowFindings([string]$Base, [string]$Worktree, $Rules) {
     # Место стадии в каждом флоу: файл стадии — её индекс в списке.
     $flows = @(Get-KitFlowList $Base)
     if (-not $flows.Count) {
-        New-KitFinding 'WARN' 'flow.md' 'флоу пуст — написать с оператором хотя бы одну стадию и один флоу'
+        New-KitFinding 'WARN' $script:KitFlowFile 'флоу пуст — написать с оператором хотя бы одну стадию и один флоу'
     }
     $orders = @()
     $flowNames = @{}
     foreach ($flow in $flows) {
         $at = "флоу «$($flow.name)»"
         $flowKey = ConvertTo-KitTitleKey $flow.name
-        if ($flowNames.ContainsKey($flowKey)) { New-KitFinding 'FAIL' 'flow.md' "${at}: имя уже у другого флоу — развести имена" }
+        if ($flowNames.ContainsKey($flowKey)) { New-KitFinding 'FAIL' $script:KitFlowFile "${at}: имя уже у другого флоу — развести имена" }
         $flowNames[$flowKey] = $true
         if (-not $flow.items.Count) {
-            New-KitFinding 'FAIL' 'flow.md' "${at}: ни одной стадии — дописать список или убрать заголовок «##»"
+            New-KitFinding 'FAIL' $script:KitFlowFile "${at}: ни одной стадии — дописать список или убрать заголовок «##»"
         }
         if ($flows.Count -gt 1 -and -not $flow.when) {
-            New-KitFinding 'FAIL' 'flow.md' "${at}: нет строки «когда:» или она пуста — написать, каким задачам этот флоу"
+            New-KitFinding 'FAIL' $script:KitFlowFile "${at}: нет строки «когда:» или она пуста — написать, каким задачам этот флоу"
         }
 
         $order = [ordered]@{}
         $previous = 0
         foreach ($i in $flow.items) {
             if ($i.number -ne $previous + 1) {
-                New-KitFinding 'WARN' 'flow.md' "${at}: пункт $($i.number) после пункта $previous — стадии нумеруются подряд с 1"
+                New-KitFinding 'WARN' $script:KitFlowFile "${at}: пункт $($i.number) после пункта $previous — стадии нумеруются подряд с 1"
             }
             $previous = $i.number
             if (-not $i.file) {
-                New-KitFinding 'FAIL' 'flow.md' "${at}: пункт $($i.number) «$($i.text)» — не ссылка на $($script:KitStagesDir)/<файл>.md"
+                New-KitFinding 'FAIL' $script:KitFlowFile "${at}: пункт $($i.number) «$($i.text)» — не ссылка на $($script:KitStagesDir)/<файл>.md"
                 continue
             }
             $fileKey = $i.file.ToLowerInvariant()
             if (-not $stages.Contains($fileKey)) {
-                New-KitFinding 'FAIL' 'flow.md' "${at}: пункт $($i.number) ведёт на $($script:KitStagesDir)/$($i.file) — такого файла нет"
+                New-KitFinding 'FAIL' $script:KitFlowFile "${at}: пункт $($i.number) ведёт на $($script:KitStagesDir)/$($i.file) — такого файла нет"
                 continue
             }
             $stage = $stages[$fileKey]
             if ($stage.name -and (ConvertTo-KitTitleKey $i.title) -ne (ConvertTo-KitTitleKey $stage.name)) {
-                New-KitFinding 'FAIL' 'flow.md' "${at}: пункт $($i.number) «$($i.title)», а заголовок $($stage.label) — «$($stage.name)»"
+                New-KitFinding 'FAIL' $script:KitFlowFile "${at}: пункт $($i.number) «$($i.title)», а заголовок $($stage.label) — «$($stage.name)»"
             }
             if ($order.Contains($fileKey)) {
-                New-KitFinding 'FAIL' 'flow.md' "${at}: стадия $($stage.label) стоит дважды"
+                New-KitFinding 'FAIL' $script:KitFlowFile "${at}: стадия $($stage.label) стоит дважды"
                 continue
             }
             $order[$fileKey] = $order.Count
@@ -1220,7 +1227,7 @@ function Get-KitCommitFindings([string]$Base, [string]$Worktree, [string[]]$File
         $rel = Get-KitRelativePath $Base $path
         # Удалённая стадия ломает флоу, который на неё ссылается, поэтому сверку флоу
         # запускает и удаление.
-        if ($rel -ieq 'flow.md' -or $rel -match "^$($script:KitStagesDir)\\") { $flowTouched = $true }
+        if ($rel -match "^$($script:KitFlowDir)\\") { $flowTouched = $true }
         if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { continue }
 
         if ($rel -match '^local\\') {
