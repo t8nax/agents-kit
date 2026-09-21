@@ -199,7 +199,7 @@ try {
             # Справки подаются путём: правила файлов нужны только пишущей сессии, глоссарий —
             # только сессии, которой непонятно слово.
             $layoutLine = ''
-            foreach ($ref in @(@('base-layout.md', 'Раскладка базы'), @('task-memory.md', 'Правила памяти задачи'), @('backlog-record.md', 'Правила записи бэклога'), @('glossary.md', 'Глоссарий'))) {
+            foreach ($ref in @(@('base-layout.md', 'Раскладка базы'), @('flow-stages.md', 'Правила флоу и стадий'), @('task-memory.md', 'Правила памяти задачи'), @('backlog-record.md', 'Правила записи бэклога'), @('glossary.md', 'Глоссарий'))) {
                 $refPath = ConvertTo-KitPath (Join-Path $refDir $ref[0])
                 if (Test-Path -LiteralPath $refPath -PathType Leaf) {
                     $layoutLine += "`n- $($ref[1]): ``$refPath``"

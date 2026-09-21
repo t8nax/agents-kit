@@ -25,6 +25,7 @@ description: "Правка кита: добавить или изменить с
 | `check-kit.ps1` | то ли делает кит на стенде и в порядке ли его репозиторий |
 | `plugin/reference/invariants.md` | что действует в каждой сессии под китом |
 | `plugin/reference/base-layout.md` | как ведут файлы базы |
+| `plugin/reference/flow-stages.md` | как пишут флоу и стадии базы |
 | `plugin/reference/task-memory.md` | как ведут память задачи и вопрос оператору в ней |
 | `plugin/reference/backlog-record.md` | как пишут, нумеруют и берут запись бэклога |
 | `plugin/reference/glossary.md` | что значит слово кита в проекте под китом |

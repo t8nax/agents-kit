@@ -278,12 +278,28 @@ try {
         return $problem
     }
 
-    # Флоу нужен только /drive, и в каждую сессию он не приезжает.
-    Check 'флоу базы — в контекст не попадает' {
+    # Флоу и стадии нужны только /drive, и в каждую сессию они не приезжают.
+    Check 'флоу и стадии базы — в контекст не попадают' {
+        $flow = Join-Path $base 'flow.md'
+        $stages = Join-Path $base 'stages'
+        $saved = Get-Content -LiteralPath $flow -Raw
+        New-Item -ItemType Directory -Force -Path $stages | Out-Null
+        Set-Content -LiteralPath $flow -Encoding utf8 -Value '# Флоу', '', '## Метка флоу вне подачи', '1. [Ветка](stages/branch.md)'
+        Set-Content -LiteralPath (Join-Path $stages 'branch.md') -Encoding utf8 `
+            -Value '# Ветка', '', 'исполнитель: оркестратор', 'выход: ветка', '', '1. Метка стадии вне подачи.'
+        $problem = ExpectNoText $repo 'Метка флоу вне подачи'
+        if (-not $problem) { $problem = ExpectNoText $repo 'Метка стадии вне подачи' }
+        Set-Content -LiteralPath $flow -Encoding utf8 -Value $saved -NoNewline
+        Remove-Item -LiteralPath $stages -Recurse -Force
+        return $problem
+    }
+
+    # Пункт флоу адресует стадию файлом: оборванная ссылка оставила бы флоу без стадии молча.
+    Check 'флоу ведёт на файл стадии, которого нет, — сверка называет' {
         $flow = Join-Path $base 'flow.md'
         $saved = Get-Content -LiteralPath $flow -Raw
-        Set-Content -LiteralPath $flow -Encoding utf8 -Value '# Флоу', '', '## 1. Метка флоу вне подачи'
-        $problem = ExpectNoText $repo 'Метка флоу вне подачи'
+        Set-Content -LiteralPath $flow -Encoding utf8 -Value '# Флоу', '', '## полный', '1. [Ветка](stages/branch.md)'
+        $problem = ExpectText $repo 'такого файла нет'
         Set-Content -LiteralPath $flow -Encoding utf8 -Value $saved -NoNewline
         return $problem
     }
@@ -335,6 +351,9 @@ try {
         Set-KitMemory $script:memRepo $repo 'дочитать формат позиции'
         return ExpectText $repo 'дочитать формат позиции'
     }
+
+    # Флоу задачи сверка сводит со строкой памяти: без неё не видно, по какому списку идёт задача.
+    Check 'память без строки «флоу:» — сверка называет' { ExpectText $repo 'нет строки «флоу:»' }
 
     # Файл без объявленной копии не подаётся, но лежит по своему адресу: сессии называется
     # строка починки, иначе она бросит свою работу как чужую.
