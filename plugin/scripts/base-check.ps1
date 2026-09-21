@@ -622,22 +622,41 @@ function Get-KitMemoryFlowStages([string]$Text) {
     }
 }
 
+function Find-KitFlow($Flows, [string]$Name) {
+    $key = ConvertTo-KitTitleKey $Name
+    return @($Flows | Where-Object { (ConvertTo-KitTitleKey $_.name) -eq $key }) | Select-Object -First 1
+}
+
+# Те же ли стадии у флоу, что в «Агенту → Флоу» памяти: те же названия в том же порядке.
+function Test-KitFlowMatchesMemory($Flow, [string]$Text) {
+    $want = @(for ($i = 0; $i -lt $Flow.items.Count; $i++) { "$($i + 1). $(ConvertTo-KitTitleKey $Flow.items[$i].title)" })
+    $have = @(Get-KitMemoryFlowStages $Text)
+    return ($want -join "`n") -eq ($have -join "`n")
+}
+
 # Флоу задачи: строка есть и называет флоу из flow.md. Разошедшийся со списком флоу перечень
 # стадий — WARN: флоу могли поправить посреди задачи, и решает это сессия с оператором.
+# Имени нет — флоу переименован или удалён; кандидата на новое имя сверка называет, но строку
+# не правит: удалённый флоу с теми же стадиями неотличим от переименованного.
 function Get-KitMemoryFlowFindings([string]$Base, [string]$Text, [string]$Label) {
     $name = Get-KitMemoryFlow $Text
     if (-not $name) {
         New-KitFinding 'FAIL' $Label 'нет строки «флоу:» с именем флоу задачи — флоу выбирается при взятии'
         return
     }
-    $flow = @(Get-KitFlowList $Base | Where-Object { (ConvertTo-KitTitleKey $_.name) -eq (ConvertTo-KitTitleKey $name) }) | Select-Object -First 1
+    $flows = @(Get-KitFlowList $Base)
+    $flow = Find-KitFlow $flows $name
     if (-not $flow) {
-        New-KitFinding 'FAIL' $Label "«флоу: $name» — такого флоу в $($script:KitFlowFile) нет"
+        $same = @($flows | Where-Object { $_.items.Count -and (Test-KitFlowMatchesMemory $_ $Text) })
+        if ($same.Count -eq 1) {
+            New-KitFinding 'FAIL' $Label "«флоу: $name» — такого флоу в $($script:KitFlowFile) нет; похоже, он переименован в «$($same[0].name)»: стадии те же — поправить строку «флоу:» на это имя; флоу удалён — вопрос оператору"
+        }
+        else {
+            New-KitFinding 'FAIL' $Label "«флоу: $name» — такого флоу в $($script:KitFlowFile) нет: переименован — поправить строку «флоу:» на новое имя и перенести во «Флоу» памяти его стадии; удалён — вопрос оператору"
+        }
         return
     }
-    $want = @(for ($i = 0; $i -lt $flow.items.Count; $i++) { "$($i + 1). $(ConvertTo-KitTitleKey $flow.items[$i].title)" })
-    $have = @(Get-KitMemoryFlowStages $Text)
-    if (($want -join "`n") -ne ($have -join "`n")) {
+    if (-not (Test-KitFlowMatchesMemory $flow $Text)) {
         New-KitFinding 'WARN' $Label "«Агенту → Флоу» разошлось со списком флоу «$($flow.name)» в $($script:KitFlowFile) — флоу могли поправить посреди задачи: перечитать и решить с оператором"
     }
 }
@@ -794,10 +813,20 @@ function Get-KitStepFindings([string]$Base, [string]$Path, [string]$Label) {
 
     $was = ConvertTo-KitMarkdown ($previous -join "`n")
 
+    # Смену флоу от переименования отличает то, что прежний флоу исчез из flow.md, а у флоу
+    # с новым именем те же стадии, что в памяти: правка стадий посреди задачи и так разрешена,
+    # а при переименовании задача остаётся на своём флоу. flow.md читается с диска, а не из HEAD:
+    # переименование уезжает и тем же коммитом, что память, и раньше неё.
     $wasFlow = Get-KitMemoryFlow $was
     $nowFlow = Get-KitMemoryFlow $now
-    if ($wasFlow -and (ConvertTo-KitTitleKey $wasFlow) -ne (ConvertTo-KitTitleKey $nowFlow)) {
-        New-KitFinding 'FAIL' $Label "«флоу:» сменилась с «$wasFlow» на «$nowFlow» — флоу задачи не меняется: задача переросла флоу — вопрос оператору о сужении критерия"
+    $renamed = $false
+    if ($wasFlow -and $nowFlow -and (ConvertTo-KitTitleKey $wasFlow) -ne (ConvertTo-KitTitleKey $nowFlow)) {
+        $flows = @(Get-KitFlowList $Base)
+        $target = Find-KitFlow $flows $nowFlow
+        $renamed = -not (Find-KitFlow $flows $wasFlow) -and $target -and $target.items.Count -and (Test-KitFlowMatchesMemory $target $now)
+    }
+    if ($wasFlow -and -not $renamed -and (ConvertTo-KitTitleKey $wasFlow) -ne (ConvertTo-KitTitleKey $nowFlow)) {
+        New-KitFinding 'FAIL' $Label "«флоу:» сменилась с «$wasFlow» на «$nowFlow» — флоу задачи не меняется: флоу переименован — перенести во «Флоу» памяти его стадии тем же коммитом; задача переросла флоу — вопрос оператору о сужении критерия"
     }
     $wasSteps = @(Get-KitStepLines $was)
     $before = @{}

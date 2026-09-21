@@ -1,6 +1,6 @@
 # agents-kit: то ли делает кит на живом стенде — заводит базу, связывает с ней основную
-# копию, подаёт сессии её знание, будит ждущую сессию ответом оператора — и молчит ли
-# там, где его не звали; после стенда — в порядке ли сам репозиторий кита.
+# копию, подаёт сессии её знание, сверяет коммит в базу, будит ждущую сессию ответом
+# оператора — и молчит ли там, где его не звали; после стенда — в порядке ли сам репозиторий кита.
 #   pwsh -NoProfile -File check-kit.ps1 [-KeepTemp]
 #
 # Стенд один на все скрипты — репозиторий, база, копия и worktree во временной папке, —
@@ -19,6 +19,7 @@ $script:remove = Join-Path $scripts 'worktree-remove.ps1'
 $script:await = Join-Path $scripts 'await-answer.ps1'
 $script:deploy = Join-Path $scripts 'agents-deploy.ps1'
 $script:wtAdd = Join-Path $scripts 'worktree-add.ps1'
+$script:gate = Join-Path $scripts 'commit-gate.ps1'
 $root = Join-Path ([System.IO.Path]::GetTempPath()) ("agents-kit-check-" + [guid]::NewGuid().ToString('N').Substring(0, 8))
 
 # Без этих переменных первый коммит base-init.ps1 зависел бы от конфига машины.
@@ -40,6 +41,17 @@ function Invoke-Hook([string]$Dir) {
     $text = ($out -join "`n").Trim()
     if (-not $text) { return '' }
     try { return [string](($text | ConvertFrom-Json).hookSpecificOutput.additionalContext) }
+    catch { return "!!НЕ-JSON!! $text" }
+}
+
+# Гейт коммита получает команду и каталог в stdin, как от Claude Code. Ответ — причина отказа
+# или пустая строка, если коммит идёт.
+function Invoke-CommitGate([string]$Dir, [string]$Command) {
+    $payload = @{ cwd = $Dir; tool_input = @{ command = $Command } } | ConvertTo-Json -Compress
+    $out = $payload | & pwsh -NoProfile -File $script:gate 2>$null
+    $text = ($out -join "`n").Trim()
+    if (-not $text) { return '' }
+    try { return [string](($text | ConvertFrom-Json).hookSpecificOutput.permissionDecisionReason) }
     catch { return "!!НЕ-JSON!! $text" }
 }
 
@@ -191,6 +203,8 @@ $modCase = Join-Path $mono 'Mixed\Case'
 $baseFoo = Join-Path $root 'base-foo'
 $baseBar = Join-Path $root 'base-bar'
 $basePfx = Join-Path $root 'base-prefix'
+$renRepo = Join-Path $root 'rename'
+$renBase = Join-Path $root 'base-rename'
 
 try {
     New-Item -ItemType Directory -Force -Path $plain, $notbase | Out-Null
@@ -423,6 +437,72 @@ try {
         $problem = ExpectNoText $repo 'это работа чужой копии'
         Set-KitMemory $script:memRepo $repo 'дочитать формат позиции'
         return $problem
+    }
+
+    # Переименование флоу посреди задачи: своя база, чтобы коммит памяти не сдвинул историю
+    # основной. Гейт гоняется настоящий, а коммит не делается — он только судит.
+    New-TestRepo $renRepo
+    Invoke-BaseInit $renBase | Out-Null
+    & pwsh -NoProfile -File $link -Path $renRepo -Base $renBase | Out-Null
+    $renFlow = Join-Path $renBase 'flow\flow.md'
+    $renStages = Join-Path $renBase 'flow\stages'
+    New-Item -ItemType Directory -Force -Path $renStages | Out-Null
+    foreach ($s in @(@('impl', 'Реализация'), @('review', 'Ревью'), @('writing', 'Написание'))) {
+        Set-Content -LiteralPath (Join-Path $renStages "$($s[0]).md") -Encoding utf8 `
+            -Value "# $($s[1])", '', 'исполнитель: оркестратор', 'выход: коммит'
+    }
+    $renFull = @('## полный', 'когда: новая возможность', '1. [Реализация](stages/impl.md)', '2. [Ревью](stages/review.md)', '')
+    $renDocs = @('## документация', 'когда: правка текстов', '1. [Написание](stages/writing.md)', '2. [Ревью](stages/review.md)', '')
+    $renFeature = @('## фича', 'когда: новая возможность', '1. [Реализация](stages/impl.md)', '2. [Ревью](stages/review.md)', '')
+    $renMem = Get-HookMemoryPath $renRepo
+    $renMemory = {
+        param([string]$Flow)
+        New-Item -ItemType Directory -Force -Path (Split-Path $renMem -Parent) | Out-Null
+        Set-Content -LiteralPath $renMem -Encoding utf8 -Value @(
+            '# Разбор накладной', "рабочая копия: $renRepo", "флоу: $Flow", '',
+            '## Агенту', '', '### Флоу', '- [ ] 1. Реализация', '- [ ] 2. Ревью', '',
+            '### Шаги', '- [ ] дочитать формат позиции')
+    }
+    Set-Content -LiteralPath $renFlow -Encoding utf8 -Value (@('# Флоу', '') + $renFull + $renDocs)
+    & $renMemory 'полный'
+    & git -C $renBase add -A 2>$null
+    & git -C $renBase commit -qm 'задача взята' | Out-Null
+    $renCommit = "git -C `"$renBase`" commit -m память -- `"$renFlow`" `"$renMem`""
+
+    Check 'флоу памяти нет, стадии те же у одного флоу — сверка называет его' {
+        Set-Content -LiteralPath $renFlow -Encoding utf8 -Value (@('# Флоу', '') + $renFeature + $renDocs)
+        return ExpectText $renRepo 'переименован в «фича»'
+    }
+
+    Check 'флоу памяти нет, флоу с теми же стадиями нет — переименован или удалён' {
+        Set-Content -LiteralPath $renFlow -Encoding utf8 -Value (@('# Флоу', '') + $renDocs)
+        $problem = ExpectText $renRepo 'переименован — поправить строку «флоу:» на новое имя'
+        if (-not $problem) { $problem = ExpectNoText $renRepo 'переименован в «' }
+        return $problem
+    }
+
+    Check 'коммит памяти: флоу переименован, строка поправлена, стадии те же — гейт пускает' {
+        Set-Content -LiteralPath $renFlow -Encoding utf8 -Value (@('# Флоу', '') + $renFeature + $renDocs)
+        & $renMemory 'фича'
+        $reason = Invoke-CommitGate $renRepo $renCommit
+        if ($reason -match 'флоу задачи не меняется') { return "гейт остановил переименование: $reason" }
+        return $null
+    }
+
+    Check 'коммит памяти: строка сменена на другой флоу, прежний на месте — гейт останавливает' {
+        Set-Content -LiteralPath $renFlow -Encoding utf8 -Value (@('# Флоу', '') + $renFull + $renDocs)
+        & $renMemory 'документация'
+        $reason = Invoke-CommitGate $renRepo $renCommit
+        if ($reason -notmatch 'флоу задачи не меняется') { return "гейт не остановил: «$reason»" }
+        return $null
+    }
+
+    Check 'коммит памяти: прежний флоу удалён, у нового другие стадии — гейт останавливает' {
+        Set-Content -LiteralPath $renFlow -Encoding utf8 -Value (@('# Флоу', '') + $renDocs)
+        & $renMemory 'документация'
+        $reason = Invoke-CommitGate $renRepo $renCommit
+        if ($reason -notmatch 'флоу задачи не меняется') { return "гейт не остановил: «$reason»" }
+        return $null
     }
 
     Copy-Item -LiteralPath $repo -Destination $copy -Recurse -Force
