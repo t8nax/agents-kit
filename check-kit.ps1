@@ -226,7 +226,7 @@ try {
     Check 'база заведена — каркас, репозиторий и коммит' {
         $r = Invoke-BaseInit $base
         if ($r.code -ne 0) { return "код возврата $($r.code): $($r.text)" }
-        foreach ($f in 'product.md', 'boundaries.md', 'flow\flow.md', 'backlog.md', '.gitignore') {
+        foreach ($f in 'product.md', 'boundaries.md', 'flow\scenarios.md', 'backlog.md', '.gitignore') {
             if (-not (Test-Path -LiteralPath (Join-Path $base $f) -PathType Leaf)) { return "нет файла $f" }
         }
         if (-not (Test-Path -LiteralPath (Join-Path $base '.git') -PathType Container)) { return 'нет репозитория базы' }
@@ -292,47 +292,47 @@ try {
         return $problem
     }
 
-    # Флоу и стадии нужны только /drive, и в каждую сессию они не приезжают.
-    Check 'флоу и стадии базы — в контекст не попадают' {
-        $flow = Join-Path $base 'flow\flow.md'
+    # Флоу нужен только /drive, и в каждую сессию он не приезжает.
+    Check 'сценарии и этапы базы — в контекст не попадают' {
+        $flow = Join-Path $base 'flow\scenarios.md'
         $stages = Join-Path $base 'flow\stages'
         $saved = Get-Content -LiteralPath $flow -Raw
         New-Item -ItemType Directory -Force -Path $stages | Out-Null
-        Set-Content -LiteralPath $flow -Encoding utf8 -Value '# Флоу', '', '## Метка флоу вне подачи', '1. [Ветка](stages/branch.md)'
+        Set-Content -LiteralPath $flow -Encoding utf8 -Value '# Сценарии', '', '## Метка сценария вне подачи', '1. [Ветка](stages/branch.md)'
         Set-Content -LiteralPath (Join-Path $stages 'branch.md') -Encoding utf8 `
-            -Value '# Ветка', '', 'исполнитель: оркестратор', 'выход: ветка', '', '1. Метка стадии вне подачи.'
-        $problem = ExpectNoText $repo 'Метка флоу вне подачи'
-        if (-not $problem) { $problem = ExpectNoText $repo 'Метка стадии вне подачи' }
+            -Value '# Ветка', '', 'исполнитель: оркестратор', 'выход: ветка', '', '1. Метка этапа вне подачи.'
+        $problem = ExpectNoText $repo 'Метка сценария вне подачи'
+        if (-not $problem) { $problem = ExpectNoText $repo 'Метка этапа вне подачи' }
         Set-Content -LiteralPath $flow -Encoding utf8 -Value $saved -NoNewline
         Remove-Item -LiteralPath $stages -Recurse -Force
         return $problem
     }
 
-    # Пункт флоу адресует стадию файлом: оборванная ссылка оставила бы флоу без стадии молча.
-    Check 'флоу ведёт на файл стадии, которого нет, — сверка называет' {
-        $flow = Join-Path $base 'flow\flow.md'
+    # Пункт сценария адресует этап файлом: оборванная ссылка оставила бы сценарий без этапа молча.
+    Check 'сценарий ведёт на файл этапа, которого нет, — сверка называет' {
+        $flow = Join-Path $base 'flow\scenarios.md'
         $saved = Get-Content -LiteralPath $flow -Raw
-        Set-Content -LiteralPath $flow -Encoding utf8 -Value '# Флоу', '', '## полный', '1. [Ветка](stages/branch.md)'
+        Set-Content -LiteralPath $flow -Encoding utf8 -Value '# Сценарии', '', '## полный', '1. [Ветка](stages/branch.md)'
         $problem = ExpectText $repo 'такого файла нет'
         Set-Content -LiteralPath $flow -Encoding utf8 -Value $saved -NoNewline
         return $problem
     }
 
-    # Возврат пишет флоу: одна стадия «Ревью» возвращает в каждом флоу на своё. Лишняя стадия
-    # вне флоу показывает, что сверка флоу дошла до подачи.
-    Check 'возврат под пунктом флоу на стадию раньше — сверка проходит' {
-        $flow = Join-Path $base 'flow\flow.md'
+    # Возврат пишет сценарий: один этап «Ревью» возвращает в каждом сценарии на своё. Лишний этап
+    # вне сценариев показывает, что сверка флоу дошла до подачи.
+    Check 'возврат под пунктом сценария на этап раньше — сверка проходит' {
+        $flow = Join-Path $base 'flow\scenarios.md'
         $stages = Join-Path $base 'flow\stages'
         $saved = Get-Content -LiteralPath $flow -Raw
         New-Item -ItemType Directory -Force -Path $stages | Out-Null
-        Set-Content -LiteralPath $flow -Encoding utf8 -Value '# Флоу', '',
-            '## полный', 'когда: новая возможность', '1. [Реализация](stages/impl.md)', '2. [Ревью](stages/review.md)', '   - возврат: замечания — стадия «Реализация»', '',
-            '## документация', 'когда: правка текстов', '1. [Написание](stages/writing.md)', '2. [Ревью](stages/review.md)', '   - возврат: замечания — стадия «Написание»'
+        Set-Content -LiteralPath $flow -Encoding utf8 -Value '# Сценарии', '',
+            '## полный', 'когда: новая возможность', '1. [Реализация](stages/impl.md)', '2. [Ревью](stages/review.md)', '   - возврат: замечания — этап «Реализация»', '',
+            '## документация', 'когда: правка текстов', '1. [Написание](stages/writing.md)', '2. [Ревью](stages/review.md)', '   - возврат: замечания — этап «Написание»'
         foreach ($s in @(@('impl', 'Реализация'), @('review', 'Ревью'), @('writing', 'Написание'), @('spare', 'Запасная'))) {
             Set-Content -LiteralPath (Join-Path $stages "$($s[0]).md") -Encoding utf8 `
                 -Value "# $($s[1])", '', 'исполнитель: оркестратор', 'выход: коммит'
         }
-        $problem = ExpectText $repo 'стадия не входит ни в один флоу'
+        $problem = ExpectText $repo 'этап не входит ни в один сценарий'
         if (-not $problem) { $problem = ExpectNoText $repo 'пункт 2: возврат' }
         if (-not $problem) { $problem = ExpectNoText $repo 'не возврат' }
         Set-Content -LiteralPath $flow -Encoding utf8 -Value $saved -NoNewline
@@ -340,19 +340,19 @@ try {
         return $problem
     }
 
-    Check 'возврат на стадию, которой нет в этом флоу, — сверка называет' {
-        $flow = Join-Path $base 'flow\flow.md'
+    Check 'возврат на этап, которого нет в этом сценарии, — сверка называет' {
+        $flow = Join-Path $base 'flow\scenarios.md'
         $stages = Join-Path $base 'flow\stages'
         $saved = Get-Content -LiteralPath $flow -Raw
         New-Item -ItemType Directory -Force -Path $stages | Out-Null
-        Set-Content -LiteralPath $flow -Encoding utf8 -Value '# Флоу', '',
+        Set-Content -LiteralPath $flow -Encoding utf8 -Value '# Сценарии', '',
             '## полный', 'когда: новая возможность', '1. [Реализация](stages/impl.md)', '2. [Ревью](stages/review.md)', '',
-            '## документация', 'когда: правка текстов', '1. [Ревью](stages/review.md)', '   - возврат: замечания — стадия «Реализация»'
+            '## документация', 'когда: правка текстов', '1. [Ревью](stages/review.md)', '   - возврат: замечания — этап «Реализация»'
         foreach ($s in @(@('impl', 'Реализация'), @('review', 'Ревью'))) {
             Set-Content -LiteralPath (Join-Path $stages "$($s[0]).md") -Encoding utf8 `
                 -Value "# $($s[1])", '', 'исполнитель: оркестратор', 'выход: коммит'
         }
-        $problem = ExpectText $repo 'в этом флоу её нет'
+        $problem = ExpectText $repo 'в этом сценарии его нет'
         Set-Content -LiteralPath $flow -Encoding utf8 -Value $saved -NoNewline
         Remove-Item -LiteralPath $stages -Recurse -Force
         return $problem
@@ -406,8 +406,8 @@ try {
         return ExpectText $repo 'дочитать формат позиции'
     }
 
-    # Флоу задачи сверка сводит со строкой памяти: без неё не видно, по какому списку идёт задача.
-    Check 'память без строки «флоу:» — сверка называет' { ExpectText $repo 'нет строки «флоу:»' }
+    # Сценарий задачи сверка сводит со строкой памяти: без неё не видно, по какому списку идёт задача.
+    Check 'память без строки «сценарий:» — сверка называет' { ExpectText $repo 'нет строки «сценарий:»' }
 
     # Файл без объявленной копии не подаётся, но лежит по своему адресу: сессии называется
     # строка починки, иначе она бросит свою работу как чужую.
@@ -439,12 +439,12 @@ try {
         return $problem
     }
 
-    # Переименование флоу посреди задачи: своя база, чтобы коммит памяти не сдвинул историю
+    # Переименование сценария посреди задачи: своя база, чтобы коммит памяти не сдвинул историю
     # основной. Гейт гоняется настоящий, а коммит не делается — он только судит.
     New-TestRepo $renRepo
     Invoke-BaseInit $renBase | Out-Null
     & pwsh -NoProfile -File $link -Path $renRepo -Base $renBase | Out-Null
-    $renFlow = Join-Path $renBase 'flow\flow.md'
+    $renFlow = Join-Path $renBase 'flow\scenarios.md'
     $renStages = Join-Path $renBase 'flow\stages'
     New-Item -ItemType Directory -Force -Path $renStages | Out-Null
     foreach ($s in @(@('impl', 'Реализация'), @('review', 'Ревью'), @('writing', 'Написание'))) {
@@ -459,107 +459,107 @@ try {
         param([string]$Flow)
         New-Item -ItemType Directory -Force -Path (Split-Path $renMem -Parent) | Out-Null
         Set-Content -LiteralPath $renMem -Encoding utf8 -Value @(
-            '# Разбор накладной', "рабочая копия: $renRepo", "флоу: $Flow", '',
-            '## Агенту', '', '### Флоу', '- [ ] 1. Реализация', '- [ ] 2. Ревью', '',
+            '# Разбор накладной', "рабочая копия: $renRepo", "сценарий: $Flow", '',
+            '## Агенту', '', '### Сценарий', '- [ ] 1. Реализация', '- [ ] 2. Ревью', '',
             '### Шаги', '- [ ] дочитать формат позиции')
     }
-    Set-Content -LiteralPath $renFlow -Encoding utf8 -Value (@('# Флоу', '') + $renFull + $renDocs)
+    Set-Content -LiteralPath $renFlow -Encoding utf8 -Value (@('# Сценарии', '') + $renFull + $renDocs)
     & $renMemory 'полный'
     & git -C $renBase add -A 2>$null
     & git -C $renBase commit -qm 'задача взята' | Out-Null
     $renCommit = "git -C `"$renBase`" commit -m память -- `"$renFlow`" `"$renMem`""
 
-    Check 'флоу памяти нет, стадии те же у одного флоу — сверка называет его' {
-        Set-Content -LiteralPath $renFlow -Encoding utf8 -Value (@('# Флоу', '') + $renFeature + $renDocs)
+    Check 'сценария памяти нет, этапы те же у одного сценария — сверка называет его' {
+        Set-Content -LiteralPath $renFlow -Encoding utf8 -Value (@('# Сценарии', '') + $renFeature + $renDocs)
         return ExpectText $renRepo 'переименован в «фича»'
     }
 
-    Check 'флоу памяти нет, флоу с теми же стадиями нет — переименован или удалён' {
-        Set-Content -LiteralPath $renFlow -Encoding utf8 -Value (@('# Флоу', '') + $renDocs)
-        $problem = ExpectText $renRepo 'переименован — поправить строку «флоу:» на новое имя'
+    Check 'сценария памяти нет, сценария с теми же этапами нет — переименован или удалён' {
+        Set-Content -LiteralPath $renFlow -Encoding utf8 -Value (@('# Сценарии', '') + $renDocs)
+        $problem = ExpectText $renRepo 'переименован — поправить строку «сценарий:» на новое имя'
         if (-not $problem) { $problem = ExpectNoText $renRepo 'переименован в «' }
         return $problem
     }
 
-    Check 'коммит памяти: флоу переименован, строка поправлена, стадии те же — гейт пускает' {
-        Set-Content -LiteralPath $renFlow -Encoding utf8 -Value (@('# Флоу', '') + $renFeature + $renDocs)
+    Check 'коммит памяти: сценарий переименован, строка поправлена, этапы те же — гейт пускает' {
+        Set-Content -LiteralPath $renFlow -Encoding utf8 -Value (@('# Сценарии', '') + $renFeature + $renDocs)
         & $renMemory 'фича'
         $reason = Invoke-CommitGate $renRepo $renCommit
-        if ($reason -match 'флоу задачи не меняется') { return "гейт остановил переименование: $reason" }
+        if ($reason -match 'сценарий задачи не меняется') { return "гейт остановил переименование: $reason" }
         return $null
     }
 
-    Check 'коммит памяти: строка сменена на другой флоу, прежний на месте — гейт останавливает' {
-        Set-Content -LiteralPath $renFlow -Encoding utf8 -Value (@('# Флоу', '') + $renFull + $renDocs)
+    Check 'коммит памяти: строка сменена на другой сценарий, прежний на месте — гейт останавливает' {
+        Set-Content -LiteralPath $renFlow -Encoding utf8 -Value (@('# Сценарии', '') + $renFull + $renDocs)
         & $renMemory 'документация'
         $reason = Invoke-CommitGate $renRepo $renCommit
-        if ($reason -notmatch 'флоу задачи не меняется') { return "гейт не остановил: «$reason»" }
+        if ($reason -notmatch 'сценарий задачи не меняется') { return "гейт не остановил: «$reason»" }
         return $null
     }
 
-    Check 'коммит памяти: прежний флоу удалён, у нового другие стадии — гейт останавливает' {
-        Set-Content -LiteralPath $renFlow -Encoding utf8 -Value (@('# Флоу', '') + $renDocs)
+    Check 'коммит памяти: прежний сценарий удалён, у нового другие этапы — гейт останавливает' {
+        Set-Content -LiteralPath $renFlow -Encoding utf8 -Value (@('# Сценарии', '') + $renDocs)
         & $renMemory 'документация'
         $reason = Invoke-CommitGate $renRepo $renCommit
-        if ($reason -notmatch 'флоу задачи не меняется') { return "гейт не остановил: «$reason»" }
+        if ($reason -notmatch 'сценарий задачи не меняется') { return "гейт не остановил: «$reason»" }
         return $null
     }
 
-    # Потерянный раздел стадий выключил бы сверку хода задачи молча. Строки стадий без заголовка
+    # Потерянный раздел этапов выключил бы сверку хода задачи молча. Строки этапов без заголовка
     # уходят в предыдущий подраздел.
-    Set-Content -LiteralPath $renFlow -Encoding utf8 -Value (@('# Флоу', '') + $renFull + $renDocs)
-    $renHead = @('# Разбор накладной', "рабочая копия: $renRepo", 'флоу: полный', '', '## Агенту', '')
+    Set-Content -LiteralPath $renFlow -Encoding utf8 -Value (@('# Сценарии', '') + $renFull + $renDocs)
+    $renHead = @('# Разбор накладной', "рабочая копия: $renRepo", 'сценарий: полный', '', '## Агенту', '')
     $renStageLines = @('- [ ] 1. Реализация', '- [ ] 2. Ревью', '')
     $renSteps = @('### Шаги', '- [ ] дочитать формат позиции')
     $renNoFlow = $renHead + @('### Факты', '- формат позиции известен') + $renStageLines + $renSteps
 
-    Check 'память без «### Флоу», стадии под «Фактами» — красная находка называет, где они' {
+    Check 'память без «### Сценарий», этапы под «Фактами» — красная находка называет, где они' {
         Set-Content -LiteralPath $renMem -Encoding utf8 -Value $renNoFlow
-        $problem = ExpectText $renRepo 'нет подраздела «### Флоу» в «Агенту» — строки стадий стоят в «### Факты»'
-        if (-not $problem) { $problem = ExpectNoText $renRepo 'разошлось со списком флоу' }
+        $problem = ExpectText $renRepo 'нет подраздела «### Сценарий» в «Агенту» — строки этапов стоят в «### Факты»'
+        if (-not $problem) { $problem = ExpectNoText $renRepo 'разошлось со списком сценария' }
         return $problem
     }
 
-    Check 'во «Флоу» памяти ни одной стадии — красная находка' {
-        Set-Content -LiteralPath $renMem -Encoding utf8 -Value ($renHead + @('### Флоу', '') + $renSteps)
-        $problem = ExpectText $renRepo 'нет ни одной стадии'
-        if (-not $problem) { $problem = ExpectNoText $renRepo 'разошлось со списком флоу' }
+    Check 'в «Сценарии» памяти ни одного этапа — красная находка' {
+        Set-Content -LiteralPath $renMem -Encoding utf8 -Value ($renHead + @('### Сценарий', '') + $renSteps)
+        $problem = ExpectText $renRepo 'нет ни одного этапа'
+        if (-not $problem) { $problem = ExpectNoText $renRepo 'разошлось со списком сценария' }
         return $problem
     }
 
     Check 'память без «### Шаги» — одна красная находка, о подразделе' {
-        Set-Content -LiteralPath $renMem -Encoding utf8 -Value ($renHead + @('### Флоу') + $renStageLines)
+        Set-Content -LiteralPath $renMem -Encoding utf8 -Value ($renHead + @('### Сценарий') + $renStageLines)
         $problem = ExpectText $renRepo 'нет подраздела «### Шаги»'
         if (-not $problem) { $problem = ExpectNoText $renRepo '«Шаги» пусты' }
         return $problem
     }
 
-    # Пропажа и возврат раздела стадий меняют отметки, но переходом не считаются.
-    Check 'коммит памяти: заголовок «Флоу» стёрт, шаги уцелели — не переход' {
+    # Пропажа и возврат раздела этапов меняют отметки, но переходом не считаются.
+    Check 'коммит памяти: заголовок «Сценарий» стёрт, шаги уцелели — не переход' {
         & $renMemory 'полный'
         & git -C $renBase add -A 2>$null
-        & git -C $renBase commit -qm 'флоу памяти' | Out-Null
+        & git -C $renBase commit -qm 'сценарий памяти' | Out-Null
         Set-Content -LiteralPath $renMem -Encoding utf8 -Value $renNoFlow
         $reason = Invoke-CommitGate $renRepo $renCommit
-        if ($reason -match 'прежней стадии') { return "гейт принял пропажу за переход: $reason" }
-        if ($reason -notmatch 'нет подраздела «### Флоу»') { return "гейт не назвал пропажу: «$reason»" }
+        if ($reason -match 'прежнего этапа') { return "гейт принял пропажу за переход: $reason" }
+        if ($reason -notmatch 'нет подраздела «### Сценарий»') { return "гейт не назвал пропажу: «$reason»" }
         return $null
     }
 
-    Check 'коммит памяти: заголовок «Флоу» вернули — не переход' {
+    Check 'коммит памяти: заголовок «Сценарий» вернули — не переход' {
         & git -C $renBase add -A 2>$null
         & git -C $renBase commit -qm 'заголовок потерян' | Out-Null
         & $renMemory 'полный'
         $reason = Invoke-CommitGate $renRepo $renCommit
-        if ($reason -match 'прежней стадии') { return "гейт принял возврат заголовка за переход: $reason" }
+        if ($reason -match 'прежнего этапа') { return "гейт принял возврат заголовка за переход: $reason" }
         return $null
     }
 
     Check 'коммит памяти: заголовок «Шаги» вернули над закрытым шагом — не новые шаги' {
-        Set-Content -LiteralPath $renMem -Encoding utf8 -Value ($renHead + @('### Флоу') + $renStageLines + @('- [ ] дочитать формат позиции'))
+        Set-Content -LiteralPath $renMem -Encoding utf8 -Value ($renHead + @('### Сценарий') + $renStageLines + @('- [ ] дочитать формат позиции'))
         & git -C $renBase add -A 2>$null
         & git -C $renBase commit -qm 'заголовок шагов потерян' | Out-Null
-        Set-Content -LiteralPath $renMem -Encoding utf8 -Value ($renHead + @('### Флоу') + $renStageLines +
+        Set-Content -LiteralPath $renMem -Encoding utf8 -Value ($renHead + @('### Сценарий') + $renStageLines +
             @('### Шаги', '- [x] дочитать формат позиции — результат: формат в a.txt — проверен: прочитан файл'))
         $reason = Invoke-CommitGate $renRepo $renCommit
         if ($reason -match 'появилась уже закрытой') { return "гейт принял возврат заголовка за новые шаги: $reason" }
@@ -847,7 +847,7 @@ try {
         return $null
     }
 
-    # Новой копии субагенты нужны с первой секунды: без них флоу зовёт того, кого в ней нет.
+    # Новой копии субагенты нужны с первой секунды: без них этап зовёт того, кого в ней нет.
     Check 'заведённая рабочая копия получает субагентов базы' {
         $out = (& pwsh -NoProfile -File $script:wtAdd -Path $repo -Name 'agents-copy' 2>&1 | Out-String)
         if ($LASTEXITCODE -ne 0) { return "код возврата $LASTEXITCODE : $out" }

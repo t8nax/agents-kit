@@ -16,10 +16,10 @@
 $script:KitServedFiles = @('product.md', 'boundaries.md')
 $script:KitDecisionsDir = 'decisions'
 $script:KitAgentsDir = 'agents'
-# Флоу — каталог: flow.md со списками и stages/ с файлами стадий. Ссылка в списке ведёт
-# в stages/ от flow.md.
+# Флоу — каталог: scenarios.md со списками сценариев и stages/ с файлами этапов. Ссылка
+# в списке ведёт в stages/ от scenarios.md.
 $script:KitFlowDir = 'flow'
-$script:KitFlowFile = 'flow/flow.md'
+$script:KitScenariosFile = 'flow/scenarios.md'
 $script:KitStagesDir = 'stages'
 
 function New-KitFinding([string]$Severity, [string]$File, [string]$Message, [string]$Kind = '') {
@@ -82,7 +82,7 @@ function Get-KitDeclaredWorktree([string]$Text) {
 }
 
 # Раздел справки кита — от заголовка до следующего заголовка того же уровня или выше.
-# Заголовок внутри блока кода разделом не считается: пример флоу начинается с «##».
+# Заголовок внутри блока кода разделом не считается: пример сценариев начинается с «##».
 function Get-KitLayoutSection([string]$Text, [string]$Heading) {
     $level = $Heading.IndexOf(' ')
     $lines = [System.Collections.Generic.List[string]]::new()
@@ -162,7 +162,7 @@ function Get-KitLayoutRules {
         $result.backlogFields[$row.Groups[1].Value] = @([regex]::Matches($row.Groups[2].Value, '`([^`<>]+)`') | ForEach-Object { $_.Groups[1].Value })
     }
 
-    foreach ($row in Get-KitKeyRows (Get-KitLayoutSection (Read-KitReference 'flow-stages.md') '## Стадия')) {
+    foreach ($row in Get-KitKeyRows (Get-KitLayoutSection (Read-KitReference 'flow-stages.md') '## Этап')) {
         $key = $row.Groups[1].Value
         $result.flowKeys[$key] = ($row.Groups[3].Value -eq 'да')
         if ($key -eq 'исполнитель') {
@@ -579,7 +579,7 @@ function Test-KitAgentSubsection([string]$Text, [string]$Sub) {
     return (Get-KitLayoutSection $Text '## Агенту') -match "(?m)^###\s+$([regex]::Escape($Sub))\s*$"
 }
 
-# Подраздел, где стоят строки стадий вне «Флоу». Без заголовка они уходят в предыдущий
+# Подраздел, где стоят строки этапов вне «Сценария». Без заголовка они уходят в предыдущий
 # подраздел — по шаблону это «Факты». «Шаги» не смотрятся: шаг тоже может начинаться
 # с цифры, а у строк остальных подразделов по шаблону галочки нет.
 function Find-KitStrayStageSection([string]$Text) {
@@ -588,13 +588,13 @@ function Find-KitStrayStageSection([string]$Text) {
         $heading = [regex]::Match($line, '^###\s+(.+?)\s*$')
         if ($heading.Success) { $section = $heading.Groups[1].Value; continue }
         if ($line -match '^##?\s') { $section = $null; continue }
-        if (-not $section -or $section -in 'Флоу', 'Шаги') { continue }
+        if (-not $section -or $section -in 'Сценарий', 'Шаги') { continue }
         if ($line -match '^\s*-\s*\[[ xX]\]\s*\d+\.\s') { return $section }
     }
     return $null
 }
 
-# Разделы памяти и связь двух её частей. Без «Флоу» и «Шагов» молча выключается сверка
+# Разделы памяти и связь двух её частей. Без «Сценария» и «Шагов» молча выключается сверка
 # хода задачи — FAIL; строка агенту без своего критерия или вопроса — не ошибка формы,
 # а повод перечитать: WARN.
 function Get-KitMemoryLayoutFindings([string]$Text, [string]$Label) {
@@ -604,14 +604,14 @@ function Get-KitMemoryLayoutFindings([string]$Text, [string]$Label) {
         }
     }
     $agent = Get-KitLayoutSection $Text '## Агенту'
-    foreach ($sub in 'Критерии', 'Вопросы', 'Факты', 'Флоу', 'Шаги') {
+    foreach ($sub in 'Критерии', 'Вопросы', 'Факты', 'Сценарий', 'Шаги') {
         if (Test-KitAgentSubsection $Text $sub) { continue }
-        if ($sub -notin 'Флоу', 'Шаги') {
+        if ($sub -notin 'Сценарий', 'Шаги') {
             New-KitFinding 'WARN' $Label "нет подраздела «### $sub» в «Агенту» из шаблона памяти"
             continue
         }
-        $stray = if ($sub -eq 'Флоу') { Find-KitStrayStageSection $Text } else { $null }
-        if ($stray) { New-KitFinding 'FAIL' $Label "нет подраздела «### $sub» в «Агенту» — строки стадий стоят в «### $stray»: вернуть заголовок над ними" }
+        $stray = if ($sub -eq 'Сценарий') { Find-KitStrayStageSection $Text } else { $null }
+        if ($stray) { New-KitFinding 'FAIL' $Label "нет подраздела «### $sub» в «Агенту» — строки этапов стоят в «### $stray»: вернуть заголовок над ними" }
         else { New-KitFinding 'FAIL' $Label "нет подраздела «### $sub» в «Агенту» из шаблона памяти" }
     }
 
@@ -631,17 +631,17 @@ function Get-KitMemoryLayoutFindings([string]$Text, [string]$Label) {
     }
 }
 
-# Строка «флоу:» памяти — имя флоу задачи; пустая считается отсутствующей.
+# Строка «сценарий:» памяти — имя сценария задачи; пустая считается отсутствующей.
 function Get-KitMemoryFlow([string]$Text) {
-    $m = [regex]::Match($Text, '(?im)^\s*флоу\s*:\s*(.*?)\s*$')
+    $m = [regex]::Match($Text, '(?im)^\s*сценарий\s*:\s*(.*?)\s*$')
     if (-not $m.Success -or -not $m.Groups[1].Value) { return $null }
     return $m.Groups[1].Value
 }
 
-# Стадии «Агенту → Флоу» как «n. название»: записанное после названия — круг, выход,
+# Этапы «Агенту → Сценарий» как «n. название»: записанное после названия — круг, выход,
 # причина пропуска — отрезается по первому тире.
 function Get-KitMemoryFlowStages([string]$Text) {
-    foreach ($m in [regex]::Matches((Get-KitLayoutSection $Text '### Флоу'), '(?m)^\s*-\s*\[[ xX]\]\s*(\d+)\.\s+(.+?)\s*$')) {
+    foreach ($m in [regex]::Matches((Get-KitLayoutSection $Text '### Сценарий'), '(?m)^\s*-\s*\[[ xX]\]\s*(\d+)\.\s+(.+?)\s*$')) {
         $name = [regex]::Split($m.Groups[2].Value, '\s—\s')[0]
         "$($m.Groups[1].Value). $(ConvertTo-KitTitleKey $name)"
     }
@@ -652,23 +652,24 @@ function Find-KitFlow($Flows, [string]$Name) {
     return @($Flows | Where-Object { (ConvertTo-KitTitleKey $_.name) -eq $key }) | Select-Object -First 1
 }
 
-# Те же ли стадии у флоу, что в «Агенту → Флоу» памяти: те же названия в том же порядке.
+# Те же ли этапы у сценария, что в «Агенту → Сценарий» памяти: те же названия в том же порядке.
 function Test-KitFlowMatchesMemory($Flow, [string]$Text) {
     $want = @(for ($i = 0; $i -lt $Flow.items.Count; $i++) { "$($i + 1). $(ConvertTo-KitTitleKey $Flow.items[$i].title)" })
     $have = @(Get-KitMemoryFlowStages $Text)
     return ($want -join "`n") -eq ($have -join "`n")
 }
 
-# Флоу задачи: строка есть и называет флоу из flow.md. Разошедшийся со списком флоу перечень
-# стадий — WARN: флоу могли поправить посреди задачи, и решает это сессия с оператором.
-# Стадий ноль — FAIL, и сравнения со списком нет: у пустого «Флоу» одна причина, а не правка
-# флоу. Нет самого заголовка — причину уже назвала находка формы памяти.
-# Имени нет — флоу переименован или удалён; кандидата на новое имя сверка называет, но строку
-# не правит: удалённый флоу с теми же стадиями неотличим от переименованного.
+# Сценарий задачи: строка есть и называет сценарий из scenarios.md. Разошедшийся со списком
+# сценария перечень этапов — WARN: сценарий могли поправить посреди задачи, и решает это
+# сессия с оператором. Этапов ноль — FAIL, и сравнения со списком нет: у пустого «Сценария»
+# одна причина, а не правка сценария. Нет самого заголовка — причину уже назвала находка
+# формы памяти.
+# Имени нет — сценарий переименован или удалён; кандидата на новое имя сверка называет, но
+# строку не правит: удалённый сценарий с теми же этапами неотличим от переименованного.
 function Get-KitMemoryFlowFindings([string]$Base, [string]$Text, [string]$Label) {
     $name = Get-KitMemoryFlow $Text
     if (-not $name) {
-        New-KitFinding 'FAIL' $Label 'нет строки «флоу:» с именем флоу задачи — флоу выбирается при взятии'
+        New-KitFinding 'FAIL' $Label 'нет строки «сценарий:» с именем сценария задачи — сценарий выбирается при взятии'
         return
     }
     $flows = @(Get-KitFlowList $Base)
@@ -676,22 +677,22 @@ function Get-KitMemoryFlowFindings([string]$Base, [string]$Text, [string]$Label)
     if (-not $flow) {
         $same = @($flows | Where-Object { $_.items.Count -and (Test-KitFlowMatchesMemory $_ $Text) })
         if ($same.Count -eq 1) {
-            New-KitFinding 'FAIL' $Label "«флоу: $name» — такого флоу в $($script:KitFlowFile) нет; похоже, он переименован в «$($same[0].name)»: стадии те же — поправить строку «флоу:» на это имя; флоу удалён — вопрос оператору"
+            New-KitFinding 'FAIL' $Label "«сценарий: $name» — такого сценария в $($script:KitScenariosFile) нет; похоже, он переименован в «$($same[0].name)»: этапы те же — поправить строку «сценарий:» на это имя; сценарий удалён — вопрос оператору"
         }
         else {
-            New-KitFinding 'FAIL' $Label "«флоу: $name» — такого флоу в $($script:KitFlowFile) нет: переименован — поправить строку «флоу:» на новое имя и перенести во «Флоу» памяти его стадии; удалён — вопрос оператору"
+            New-KitFinding 'FAIL' $Label "«сценарий: $name» — такого сценария в $($script:KitScenariosFile) нет: переименован — поправить строку «сценарий:» на новое имя и перенести в «Сценарий» памяти его этапы; удалён — вопрос оператору"
         }
         return
     }
-    if (-not (Test-KitAgentSubsection $Text 'Флоу')) { return }
+    if (-not (Test-KitAgentSubsection $Text 'Сценарий')) { return }
     if (-not @(Get-KitMemoryFlowStages $Text).Count) {
         $stray = Find-KitStrayStageSection $Text
-        if ($stray) { New-KitFinding 'FAIL' $Label "в «Агенту → Флоу» нет ни одной стадии — строки стадий стоят в «### $stray»: перенести их во «Флоу»" }
-        else { New-KitFinding 'FAIL' $Label "в «Агенту → Флоу» нет ни одной стадии — переписать стадии флоу «$($flow.name)» из $($script:KitFlowFile)" }
+        if ($stray) { New-KitFinding 'FAIL' $Label "в «Агенту → Сценарий» нет ни одного этапа — строки этапов стоят в «### $stray»: перенести их в «Сценарий»" }
+        else { New-KitFinding 'FAIL' $Label "в «Агенту → Сценарий» нет ни одного этапа — переписать этапы сценария «$($flow.name)» из $($script:KitScenariosFile)" }
         return
     }
     if (-not (Test-KitFlowMatchesMemory $flow $Text)) {
-        New-KitFinding 'WARN' $Label "«Агенту → Флоу» разошлось со списком флоу «$($flow.name)» в $($script:KitFlowFile) — флоу могли поправить посреди задачи: перечитать и решить с оператором"
+        New-KitFinding 'WARN' $Label "«Агенту → Сценарий» разошлось со списком сценария «$($flow.name)» в $($script:KitScenariosFile) — сценарий могли поправить посреди задачи: перечитать и решить с оператором"
     }
 }
 
@@ -721,7 +722,7 @@ function Get-KitOwnMemoryFindings([string]$Base, [string]$Path, [string]$Label, 
     # Нарезка видна и без коммита: на старте эту проверку зовёт подача. Без заголовка «Шагов»
     # строки шагов не видны, и пропажу называет находка формы памяти.
     if ((Test-KitAgentSubsection $text 'Шаги') -and @((Get-KitFlowMarks $text).Values | Where-Object { -not $_ }).Count -and -not @(Get-KitStepLines $text).Count) {
-        New-KitFinding 'FAIL' $Label 'во «Флоу» есть неотмеченная стадия, а «Шаги» пусты — работа открытой стадии режется строками до работы'
+        New-KitFinding 'FAIL' $Label 'в «Сценарии» есть неотмеченный этап, а «Шаги» пусты — работа открытого этапа режется строками до работы'
     }
 
     Get-KitQuestionFindings $text $Label $Ceilings
@@ -790,11 +791,11 @@ function Get-KitAnsweredQuestionFindings([string]$Path, [string]$Label) {
     }
 }
 
-# Отметка стадии в «Флоу»: номер стадии — стоит ли отметка. Сравниваются отметки, а не строки:
+# Отметка этапа в «Сценарии»: номер этапа — стоит ли отметка. Сравниваются отметки, а не строки:
 # строка меняется и от дописанного выхода, а переход виден только сменой отметки.
 function Get-KitFlowMarks([string]$Text) {
     $marks = @{}
-    foreach ($m in [regex]::Matches((Get-KitLayoutSection $Text '### Флоу'), '(?m)^\s*-\s*\[([ xX])\]\s*(\d+)\.')) {
+    foreach ($m in [regex]::Matches((Get-KitLayoutSection $Text '### Сценарий'), '(?m)^\s*-\s*\[([ xX])\]\s*(\d+)\.')) {
         $marks[$m.Groups[2].Value] = ($m.Groups[1].Value -ne ' ')
     }
     return $marks
@@ -848,10 +849,10 @@ function Get-KitStepFindings([string]$Base, [string]$Path, [string]$Label) {
 
     $was = ConvertTo-KitMarkdown ($previous -join "`n")
 
-    # Смену флоу от переименования отличает то, что прежний флоу исчез из flow.md, а у флоу
-    # с новым именем те же стадии, что в памяти: правка стадий посреди задачи и так разрешена,
-    # а при переименовании задача остаётся на своём флоу. flow.md читается с диска, а не из HEAD:
-    # переименование уезжает и тем же коммитом, что память, и раньше неё.
+    # Смену сценария от переименования отличает то, что прежний сценарий исчез из scenarios.md,
+    # а у сценария с новым именем те же этапы, что в памяти: правка этапов посреди задачи и так
+    # разрешена, а при переименовании задача остаётся на своём сценарии. scenarios.md читается
+    # с диска, а не из HEAD: переименование уезжает и тем же коммитом, что память, и раньше неё.
     $wasFlow = Get-KitMemoryFlow $was
     $nowFlow = Get-KitMemoryFlow $now
     $renamed = $false
@@ -861,7 +862,7 @@ function Get-KitStepFindings([string]$Base, [string]$Path, [string]$Label) {
         $renamed = -not (Find-KitFlow $flows $wasFlow) -and $target -and $target.items.Count -and (Test-KitFlowMatchesMemory $target $now)
     }
     if ($wasFlow -and -not $renamed -and (ConvertTo-KitTitleKey $wasFlow) -ne (ConvertTo-KitTitleKey $nowFlow)) {
-        New-KitFinding 'FAIL' $Label "«флоу:» сменилась с «$wasFlow» на «$nowFlow» — флоу задачи не меняется: флоу переименован — перенести во «Флоу» памяти его стадии тем же коммитом; задача переросла флоу — вопрос оператору о сужении критерия"
+        New-KitFinding 'FAIL' $Label "«сценарий:» сменилась с «$wasFlow» на «$nowFlow» — сценарий задачи не меняется: сценарий переименован — перенести в «Сценарий» памяти его этапы тем же коммитом; задача переросла сценарий — вопрос оператору о сужении критерия"
     }
     # Без заголовка «Шагов» в одной из версий шаги не сравнить: пропажу называет находка формы
     # памяти, а коммит, который возвращает заголовок, — починка, а не новые шаги.
@@ -876,14 +877,14 @@ function Get-KitStepFindings([string]$Base, [string]$Path, [string]$Label) {
     $nowMarks = Get-KitFlowMarks $now
     $moved = $false
     $returned = $false
-    # Пропажа или возврат раздела стадий — не переход: пропажу называет находка формы памяти.
+    # Пропажа или возврат раздела этапов — не переход: пропажу называет находка формы памяти.
     $marked = @($wasMarks.Keys) + @($nowMarks.Keys)
     if (-not $wasMarks.Count -or -not $nowMarks.Count) { $marked = @() }
     foreach ($number in $marked) {
         if ($wasMarks[$number] -eq $nowMarks[$number]) { continue }
         $moved = $true
-        # Возврат снимает отметку, переход ставит: недоделанное покинутой стадии возврат
-        # уносит вместе с кругом, а из пройденной стадии незакрытому шагу уйти некуда.
+        # Возврат снимает отметку, переход ставит: недоделанное покинутого этапа возврат
+        # уносит вместе с кругом, а из пройденного этапа незакрытому шагу уйти некуда.
         if ($wasMarks[$number] -and -not $nowMarks[$number]) { $returned = $true }
     }
 
@@ -902,14 +903,14 @@ function Get-KitStepFindings([string]$Base, [string]$Path, [string]$Label) {
         New-KitFinding 'FAIL' $Label "в «Шагах» закрыто строк одним коммитом: $($closed.Count) — шаг отмечается сразу после проверки и коммитится по одному"
     }
 
-    # Коммит, в котором сменились отметки «Флоу», несёт переход или возврат, а шаги покинутой
-    # стадии уходят тем же обновлением: уцелевшая строка значит либо что их не убрали, либо что
-    # память коммитится не сразу после пройденной стадии.
+    # Коммит, в котором сменились отметки «Сценария», несёт переход или возврат, а шаги
+    # покинутого этапа уходят тем же обновлением: уцелевшая строка значит либо что их не убрали,
+    # либо что память коммитится не сразу после пройденного этапа.
     if (-not $moved) { return }
 
     $left = @($nowSteps | Where-Object { $before.ContainsKey($_.text) })
     if (-not $left.Count) { return }
-    New-KitFinding 'FAIL' $Label "в «Шагах» осталось строк прежней стадии: $($left.Count), первая — «$(Get-KitStepQuote $left[0].text)» — отметки «Флоу» сменились, а шаги покинутой стадии уходят тем же обновлением"
+    New-KitFinding 'FAIL' $Label "в «Шагах» осталось строк прежнего этапа: $($left.Count), первая — «$(Get-KitStepQuote $left[0].text)» — отметки «Сценария» сменились, а шаги покинутого этапа уходят тем же обновлением"
 }
 
 function Get-KitWorkFindings([string]$Base, [string]$Worktree, $Ceilings) {
@@ -929,7 +930,7 @@ function Get-KitWorkFindings([string]$Base, [string]$Worktree, $Ceilings) {
     }
 }
 
-# Имя субагента — строка «name:» его заголовка: по ней его зовёт флоу, и по ней же кит
+# Имя субагента — строка «name:» его заголовка: по ней его зовёт этап, и по ней же кит
 # сводит файл базы с файлом копии.
 function Get-KitAgentName([string]$Path) {
     try { $head = Get-Content -LiteralPath $Path -TotalCount 40 -ErrorAction Stop } catch { return $null }
@@ -950,7 +951,7 @@ function Get-KitAgentFindings([string]$Base, [string]$Worktree) {
         if ($item.PSIsContainer) { New-KitFinding 'WARN' $label "подкаталог в $($script:KitAgentsDir)/ — субагенты лежат плоско, файлом на субагента"; continue }
         if ($item.Extension -ine '.md') { New-KitFinding 'WARN' $label "не .md в $($script:KitAgentsDir)/ — каталог держит только субагентов"; continue }
         $name = Get-KitAgentName (ConvertTo-KitPath $item.FullName)
-        if (-not $name) { New-KitFinding 'FAIL' $label 'нет строки «name:» — по ней субагента зовёт флоу'; continue }
+        if (-not $name) { New-KitFinding 'FAIL' $label 'нет строки «name:» — по ней субагента зовёт этап'; continue }
         if ($name -cne $item.BaseName) { New-KitFinding 'FAIL' $label "«name: $name» не совпадает с именем файла — зовут субагента по «name:», а кладут его файлом"; continue }
         $sources[$item.Name] = ConvertTo-KitPath $item.FullName
     }
@@ -1006,20 +1007,20 @@ function Get-KitVisibleAgents([string]$Worktree) {
     return $names
 }
 
-# Название стадии или флоу как адрес: пробелы и регистр адреса не меняют.
+# Название этапа или сценария как адрес: пробелы и регистр адреса не меняют.
 function ConvertTo-KitTitleKey([string]$Name) {
     return ([regex]::Replace($Name, '\s+', ' ')).Trim().ToLowerInvariant()
 }
 
-# Флоу из flow.md: раздел «##» — флоу, строка «когда:» до его списка, пункты нумерованного
-# списка — ссылки на файлы стадий, строки «- возврат:» с отступом под пунктом — его возвраты.
-# Любая другая непустая строка под пунктом уходит в strays флоу: возврат с опечаткой, без
-# дефиса или без отступа иначе пропал бы молча. Разбор без находок: его берут и сверка флоу,
-# и сверка памяти задачи, которая сводит свою строку «флоу:» со списком.
+# Сценарии из scenarios.md: раздел «##» — сценарий, строка «когда:» до его списка, пункты
+# нумерованного списка — ссылки на файлы этапов, строки «- возврат:» с отступом под пунктом —
+# его возвраты. Любая другая непустая строка под пунктом уходит в strays сценария: возврат
+# с опечаткой, без дефиса или без отступа иначе пропал бы молча. Разбор без находок: его берут
+# и сверка флоу, и сверка памяти задачи, которая сводит свою строку «сценарий:» со списком.
 function Get-KitFlowList([string]$Base) {
     $flows = [System.Collections.Generic.List[object]]::new()
     $current = $null
-    foreach ($line in ((Read-KitMarkdown (Join-Path $Base $script:KitFlowFile)) -split '\r?\n')) {
+    foreach ($line in ((Read-KitMarkdown (Join-Path $Base $script:KitScenariosFile)) -split '\r?\n')) {
         $heading = [regex]::Match($line, '^##\s+(.+?)\s*$')
         if ($heading.Success) {
             $current = [pscustomobject]@{
@@ -1058,7 +1059,7 @@ function Get-KitFlowList([string]$Base) {
     return $flows
 }
 
-# Файл стадии: заголовок «#» — название, под ним подряд пары «ключ: значение», после пустой
+# Файл этапа: заголовок «#» — название, под ним подряд пары «ключ: значение», после пустой
 # строки — описание. Нумерованный пункт описания ключом не считается, даже если в нём двоеточие.
 function Read-KitStage([string]$Path, [string]$File) {
     $stage = [pscustomobject]@{
@@ -1092,81 +1093,81 @@ function Read-KitStage([string]$Path, [string]$File) {
     return $stage
 }
 
-# Флоу и стадии: то, что не даст пройти стадию однозначно, — нет обязательного ключа, чужой
-# ключ, невидимый исполнитель или помощник, помощники не у оркестратора, пункт флоу не ведёт
-# в файл стадии или называет её не её заголовком, стадия дважды в одном флоу, ссылка номером
-# или на название, которого нет, две стадии с одним названием, строка под пунктом флоу, которая
-# не возврат, возврат без условия, без названия в кавычках, на стадию, которой нет, и возврат,
-# который в своём флоу ведёт мимо или не назад. Длину флоу сверка не проверяет; отсутствие
-# flow.md назвала сверка каркаса.
+# Флоу: то, что не даст пройти этап однозначно, — нет обязательного ключа, чужой ключ,
+# невидимый исполнитель или помощник, помощники не у оркестратора, пункт сценария не ведёт
+# в файл этапа или называет его не его заголовком, этап дважды в одном сценарии, ссылка
+# номером или на название, которого нет, два этапа с одним названием, строка под пунктом
+# сценария, которая не возврат, возврат без условия, без названия в кавычках, на этап, которого
+# нет, и возврат, который в своём сценарии ведёт мимо или не назад. Длину сценария сверка
+# не проверяет; отсутствие scenarios.md назвала сверка каркаса.
 function Get-KitFlowFindings([string]$Base, [string]$Worktree, $Rules) {
-    if (-not (Test-Path -LiteralPath (Join-Path $Base $script:KitFlowFile) -PathType Leaf)) { return }
+    if (-not (Test-Path -LiteralPath (Join-Path $Base $script:KitScenariosFile) -PathType Leaf)) { return }
     if (-not $Rules.flowKeys.Contains('исполнитель') -or -not $Rules.executors.Count) {
-        New-KitFinding 'FAIL' $script:KitFlowFile 'перечень ключей стадии не разобран — таблица в разделе «Стадия» flow-stages.md кита'
+        New-KitFinding 'FAIL' $script:KitScenariosFile 'перечень ключей этапа не разобран — таблица в разделе «Этап» flow-stages.md кита'
         return
     }
 
-    # Адрес стадии — название: номер съезжает вслед за перестановкой стадий, а описание
-    # остаётся связным и ведёт в чужую стадию молча. Отсюда и запрет одинаковых названий.
+    # Адрес этапа — название: номер съезжает вслед за перестановкой этапов, а описание
+    # остаётся связным и ведёт в чужой этап молча. Отсюда и запрет одинаковых названий.
     $stages = [ordered]@{}
     $names = @{}
     $dir = Join-Path (Join-Path $Base $script:KitFlowDir) $script:KitStagesDir
     foreach ($item in @(Get-ChildItem -LiteralPath $dir -Force -ErrorAction SilentlyContinue | Sort-Object Name)) {
         $label = "$($script:KitFlowDir)/$($script:KitStagesDir)/$($item.Name)"
-        if ($item.PSIsContainer) { New-KitFinding 'WARN' $label "подкаталог в $($script:KitStagesDir)/ — стадии лежат плоско, файлом на стадию"; continue }
-        if ($item.Extension -ine '.md') { New-KitFinding 'WARN' $label "не .md в $($script:KitStagesDir)/ — каталог держит только стадии"; continue }
+        if ($item.PSIsContainer) { New-KitFinding 'WARN' $label "подкаталог в $($script:KitStagesDir)/ — этапы лежат плоско, файлом на этап"; continue }
+        if ($item.Extension -ine '.md') { New-KitFinding 'WARN' $label "не .md в $($script:KitStagesDir)/ — каталог держит только этапы"; continue }
         $stage = Read-KitStage $item.FullName $item.Name
         $stages[$item.Name.ToLowerInvariant()] = $stage
-        if (-not $stage.name) { New-KitFinding 'FAIL' $label 'нет заголовка «# <название стадии>» — по нему стадию называют флоу, память и ссылки'; continue }
+        if (-not $stage.name) { New-KitFinding 'FAIL' $label 'нет заголовка «# <название этапа>» — по нему этап называют сценарии, память и ссылки'; continue }
         $key = ConvertTo-KitTitleKey $stage.name
         if ($names.ContainsKey($key)) {
-            New-KitFinding 'FAIL' $label "название «$($stage.name)» уже у $($names[$key].label) — ссылка на такую стадию неоднозначна"
+            New-KitFinding 'FAIL' $label "название «$($stage.name)» уже у $($names[$key].label) — ссылка на такой этап неоднозначна"
             continue
         }
         $names[$key] = $stage
     }
 
-    # Место стадии в каждом флоу: файл стадии — её индекс в списке.
+    # Место этапа в каждом сценарии: файл этапа — его индекс в списке.
     $flows = @(Get-KitFlowList $Base)
     if (-not $flows.Count) {
-        New-KitFinding 'WARN' $script:KitFlowFile 'флоу пуст — написать с оператором хотя бы одну стадию и один флоу'
+        New-KitFinding 'WARN' $script:KitScenariosFile 'сценариев нет — написать с оператором хотя бы один этап и один сценарий'
     }
     $orders = @()
     $flowNames = @{}
     foreach ($flow in $flows) {
-        $at = "флоу «$($flow.name)»"
+        $at = "сценарий «$($flow.name)»"
         $flowKey = ConvertTo-KitTitleKey $flow.name
-        if ($flowNames.ContainsKey($flowKey)) { New-KitFinding 'FAIL' $script:KitFlowFile "${at}: имя уже у другого флоу — развести имена" }
+        if ($flowNames.ContainsKey($flowKey)) { New-KitFinding 'FAIL' $script:KitScenariosFile "${at}: имя уже у другого сценария — развести имена" }
         $flowNames[$flowKey] = $true
         if (-not $flow.items.Count) {
-            New-KitFinding 'FAIL' $script:KitFlowFile "${at}: ни одной стадии — дописать список или убрать заголовок «##»"
+            New-KitFinding 'FAIL' $script:KitScenariosFile "${at}: ни одного этапа — дописать список или убрать заголовок «##»"
         }
         if ($flows.Count -gt 1 -and -not $flow.when) {
-            New-KitFinding 'FAIL' $script:KitFlowFile "${at}: нет строки «когда:» или она пуста — написать, каким задачам этот флоу"
+            New-KitFinding 'FAIL' $script:KitScenariosFile "${at}: нет строки «когда:» или она пуста — написать, каким задачам этот сценарий"
         }
 
         $order = [ordered]@{}
         $previous = 0
         foreach ($i in $flow.items) {
             if ($i.number -ne $previous + 1) {
-                New-KitFinding 'WARN' $script:KitFlowFile "${at}: пункт $($i.number) после пункта $previous — стадии нумеруются подряд с 1"
+                New-KitFinding 'WARN' $script:KitScenariosFile "${at}: пункт $($i.number) после пункта $previous — этапы нумеруются подряд с 1"
             }
             $previous = $i.number
             if (-not $i.file) {
-                New-KitFinding 'FAIL' $script:KitFlowFile "${at}: пункт $($i.number) «$($i.text)» — не ссылка на $($script:KitStagesDir)/<файл>.md"
+                New-KitFinding 'FAIL' $script:KitScenariosFile "${at}: пункт $($i.number) «$($i.text)» — не ссылка на $($script:KitStagesDir)/<файл>.md"
                 continue
             }
             $fileKey = $i.file.ToLowerInvariant()
             if (-not $stages.Contains($fileKey)) {
-                New-KitFinding 'FAIL' $script:KitFlowFile "${at}: пункт $($i.number) ведёт на $($script:KitStagesDir)/$($i.file) — такого файла нет"
+                New-KitFinding 'FAIL' $script:KitScenariosFile "${at}: пункт $($i.number) ведёт на $($script:KitStagesDir)/$($i.file) — такого файла нет"
                 continue
             }
             $stage = $stages[$fileKey]
             if ($stage.name -and (ConvertTo-KitTitleKey $i.title) -ne (ConvertTo-KitTitleKey $stage.name)) {
-                New-KitFinding 'FAIL' $script:KitFlowFile "${at}: пункт $($i.number) «$($i.title)», а заголовок $($stage.label) — «$($stage.name)»"
+                New-KitFinding 'FAIL' $script:KitScenariosFile "${at}: пункт $($i.number) «$($i.title)», а заголовок $($stage.label) — «$($stage.name)»"
             }
             if ($order.Contains($fileKey)) {
-                New-KitFinding 'FAIL' $script:KitFlowFile "${at}: стадия $($stage.label) стоит дважды"
+                New-KitFinding 'FAIL' $script:KitScenariosFile "${at}: этап $($stage.label) стоит дважды"
                 continue
             }
             $order[$fileKey] = $order.Count
@@ -1174,41 +1175,41 @@ function Get-KitFlowFindings([string]$Base, [string]$Worktree, $Rules) {
         $orders += [pscustomobject]@{ name = $flow.name; order = $order }
 
         foreach ($stray in $flow.strays) {
-            New-KitFinding 'FAIL' $script:KitFlowFile "${at}: пункт $($stray.number) — строка «$($stray.text)» не возврат; под пунктом стадии стоят только строки «- возврат:»"
+            New-KitFinding 'FAIL' $script:KitScenariosFile "${at}: пункт $($stray.number) — строка «$($stray.text)» не возврат; под пунктом этапа стоят только строки «- возврат:»"
         }
-        # Направление — по месту в этом флоу: список собран целиком, и цель, стоящая ниже
+        # Направление — по месту в этом сценарии: список собран целиком, и цель, стоящая ниже
         # пункта, уже в $order.
         foreach ($i in $flow.items) {
             foreach ($return in $i.returns) {
                 $head = "${at}: пункт $($i.number)"
-                $numbered = [regex]::Matches($return, '(?i)\bстади[а-яё]*\s+(\d+)')
+                $numbered = [regex]::Matches($return, '(?i)\bэтап[а-яё]*\s+(\d+)')
                 foreach ($ref in $numbered) {
-                    New-KitFinding 'FAIL' $script:KitFlowFile "${head}: возврат «$($ref.Value)» — на стадию ссылаются названием в кавычках"
+                    New-KitFinding 'FAIL' $script:KitScenariosFile "${head}: возврат «$($ref.Value)» — на этап ссылаются названием в кавычках"
                 }
-                $target = [regex]::Match($return, '(?i)\bстади[а-яё]*\s+«([^»]+)»')
+                $target = [regex]::Match($return, '(?i)\bэтап[а-яё]*\s+«([^»]+)»')
                 if (-not $target.Success) {
                     if (-not $numbered.Count) {
-                        New-KitFinding 'FAIL' $script:KitFlowFile "${head}: возврат «$return» — назад адресуются стадией и названием в кавычках"
+                        New-KitFinding 'FAIL' $script:KitScenariosFile "${head}: возврат «$return» — назад адресуются словом «этап» и названием в кавычках"
                     }
                     continue
                 }
                 $targetName = $target.Groups[1].Value
                 if (-not $return.Substring(0, $target.Index).Trim([char[]]' —-:,')) {
-                    New-KitFinding 'FAIL' $script:KitFlowFile "${head}: возврат к стадии «$targetName» без условия"
+                    New-KitFinding 'FAIL' $script:KitScenariosFile "${head}: возврат к этапу «$targetName» без условия"
                 }
                 $targetStage = $names[(ConvertTo-KitTitleKey $targetName)]
                 if (-not $targetStage) {
-                    New-KitFinding 'FAIL' $script:KitFlowFile "${head}: возврат к стадии «$targetName» — такой стадии нет"
+                    New-KitFinding 'FAIL' $script:KitScenariosFile "${head}: возврат к этапу «$targetName» — такого этапа нет"
                     continue
                 }
                 $targetKey = $targetStage.file.ToLowerInvariant()
                 if (-not $order.Contains($targetKey)) {
-                    New-KitFinding 'FAIL' $script:KitFlowFile "${head}: возврат к стадии «$targetName» — в этом флоу её нет"
+                    New-KitFinding 'FAIL' $script:KitScenariosFile "${head}: возврат к этапу «$targetName» — в этом сценарии его нет"
                     continue
                 }
                 $fromKey = $(if ($i.file) { $i.file.ToLowerInvariant() } else { $null })
                 if ($fromKey -and $order.Contains($fromKey) -and $order[$targetKey] -ge $order[$fromKey]) {
-                    New-KitFinding 'FAIL' $script:KitFlowFile "${head}: возврат к стадии «$targetName» — она стоит не раньше: флоу вперёд не прыгает"
+                    New-KitFinding 'FAIL' $script:KitScenariosFile "${head}: возврат к этапу «$targetName» — он стоит не раньше: сценарий вперёд не прыгает"
                 }
             }
         }
@@ -1220,7 +1221,7 @@ function Get-KitFlowFindings([string]$Base, [string]$Worktree, $Rules) {
         $label = $stage.label
         $fileKey = $stage.file.ToLowerInvariant()
         $in = @($orders | Where-Object { $_.order.Contains($fileKey) })
-        if ($flows.Count -and -not $in.Count) { New-KitFinding 'WARN' $label 'стадия не входит ни в один флоу' }
+        if ($flows.Count -and -not $in.Count) { New-KitFinding 'WARN' $label 'этап не входит ни в один сценарий' }
 
         foreach ($key in $stage.keys.Keys) {
             if (-not $Rules.flowKeys.Contains($key)) {
@@ -1234,30 +1235,30 @@ function Get-KitFlowFindings([string]$Base, [string]$Worktree, $Rules) {
         }
 
         foreach ($line in $stage.body) {
-            foreach ($ref in [regex]::Matches($line, '(?i)\bстади[а-яё]*\s+(\d+)')) {
-                New-KitFinding 'FAIL' $label "ссылка «$($ref.Value)» — на стадию ссылаются названием в кавычках"
+            foreach ($ref in [regex]::Matches($line, '(?i)\bэтап[а-яё]*\s+(\d+)')) {
+                New-KitFinding 'FAIL' $label "ссылка «$($ref.Value)» — на этап ссылаются названием в кавычках"
             }
-            foreach ($ref in [regex]::Matches($line, '(?i)\bстади[а-яё]*\s+«([^»]+)»')) {
+            foreach ($ref in [regex]::Matches($line, '(?i)\bэтап[а-яё]*\s+«([^»]+)»')) {
                 $name = $ref.Groups[1].Value
                 $target = $names[(ConvertTo-KitTitleKey $name)]
                 if (-not $target) {
-                    New-KitFinding 'FAIL' $label "ссылка на стадию «$name» — такой стадии нет"
+                    New-KitFinding 'FAIL' $label "ссылка на этап «$name» — такого этапа нет"
                     continue
                 }
                 foreach ($flow in $in) {
                     if (-not $flow.order.Contains($target.file.ToLowerInvariant())) {
-                        New-KitFinding 'WARN' $label "ссылка на стадию «$name» — её нет во флоу «$($flow.name)», где стоит эта стадия"
+                        New-KitFinding 'WARN' $label "ссылка на этап «$name» — его нет в сценарии «$($flow.name)», где стоит этот этап"
                     }
                 }
             }
         }
 
-        # Помощники — кусок работы оркестратора, отданный субагенту: стадия, чью работу делает
+        # Помощники — кусок работы оркестратора, отданный субагенту: этапу, чью работу делает
         # не он, звать помощников некому.
         $executor = $stage.keys['исполнитель']
         $helpers = @(($stage.keys['помощники'] -split ',') | ForEach-Object { $_.Trim() } | Where-Object { $_ })
         if ($helpers.Count -and $executor -and $executor -ne 'оркестратор') {
-            New-KitFinding 'FAIL' $label "ключ «помощники» — зовёт их оркестратор, а работу стадии делает «$executor»"
+            New-KitFinding 'FAIL' $label "ключ «помощники» — зовёт их оркестратор, а работу этапа делает «$executor»"
         }
         foreach ($helper in $helpers) {
             if ($null -eq $agents) { $agents = Get-KitVisibleAgents $Worktree }
@@ -1310,7 +1311,7 @@ function Get-KitCommitFindings([string]$Base, [string]$Worktree, [string[]]$File
         if ($seen.ContainsKey($path.ToLowerInvariant())) { continue }
         $seen[$path.ToLowerInvariant()] = $true
         $rel = Get-KitRelativePath $Base $path
-        # Удалённая стадия ломает флоу, который на неё ссылается, поэтому сверку флоу
+        # Удалённый этап ломает сценарий, который на него ссылается, поэтому сверку флоу
         # запускает и удаление.
         if ($rel -match "^$($script:KitFlowDir)\\") { $flowTouched = $true }
         if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { continue }
