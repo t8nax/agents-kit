@@ -1130,7 +1130,7 @@ function Get-KitFlowFindings([string]$Base, [string]$Worktree, $Rules) {
     # Место этапа в каждом сценарии: файл этапа — его индекс в списке.
     $flows = @(Get-KitFlowList $Base)
     if (-not $flows.Count) {
-        New-KitFinding 'WARN' $script:KitScenariosFile 'сценариев нет — написать с оператором хотя бы один этап и один сценарий'
+        New-KitFinding 'WARN' $script:KitScenariosFile 'сценариев нет — написать с оператором хотя бы один этап и один сценарий скиллом /flow'
     }
     $orders = @()
     $flowNames = @{}

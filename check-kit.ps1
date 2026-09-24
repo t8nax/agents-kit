@@ -292,7 +292,7 @@ try {
         return $problem
     }
 
-    # Флоу нужен только /drive, и в каждую сессию он не приезжает.
+    # Флоу нужен только /flow и /drive, и в каждую сессию он не приезжает.
     Check 'сценарии и этапы базы — в контекст не попадают' {
         $flow = Join-Path $base 'flow\scenarios.md'
         $stages = Join-Path $base 'flow\stages'
