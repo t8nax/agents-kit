@@ -862,7 +862,7 @@ function Get-KitStepFindings([string]$Base, [string]$Path, [string]$Label) {
         $renamed = -not (Find-KitFlow $flows $wasFlow) -and $target -and $target.items.Count -and (Test-KitFlowMatchesMemory $target $now)
     }
     if ($wasFlow -and -not $renamed -and (ConvertTo-KitTitleKey $wasFlow) -ne (ConvertTo-KitTitleKey $nowFlow)) {
-        New-KitFinding 'FAIL' $Label "«сценарий:» сменилась с «$wasFlow» на «$nowFlow» — сценарий задачи не меняется: сценарий переименован — перенести в «Сценарий» памяти его этапы тем же коммитом; задача переросла сценарий — вопрос оператору о сужении критерия"
+        New-KitFinding 'FAIL' $Label "«сценарий:» сменилась с «$wasFlow» на «$nowFlow» — сценарий задачи не меняется: сценарий переименован — перенести в «Сценарий» памяти его этапы тем же коммитом; задача переросла сценарий — вопрос оператору о сужении задачи"
     }
     # Без заголовка «Шагов» в одной из версий шаги не сравнить: пропажу называет находка формы
     # памяти, а коммит, который возвращает заголовок, — починка, а не новые шаги.
