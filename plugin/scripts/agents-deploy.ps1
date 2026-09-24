@@ -20,7 +20,8 @@ switch ($state.status) {
     'NotGit'    { throw "«$Path» не под git — это не рабочая копия проекта под китом" }
     'NoPointer' { throw "каталог «$($state.workspace)» под китом не числится — сначала взять его под кит скиллом /onboard" }
     'Linked'    { }
-    default     { throw "связь копии «$($state.workspace)» с базой разорвана — link.ps1 без аргументов покажет, что именно" }
+    { $_ -in 'Outdated', 'Newer' } { throw (Get-KitFormatProblem $state) }
+    default    { throw "связь копии «$($state.workspace)» с базой разорвана — link.ps1 без аргументов покажет, что именно" }
 }
 
 $excludePath = Get-KitAgentExcludePath $state.worktree

@@ -232,14 +232,36 @@ function Get-KitMarkerPath([string]$BaseDir) {
     return (Join-Path $BaseDir 'agents-kit.json')
 }
 
+# Шаги перевода базы — plugin\migrations\NNN-<слаг>.ps1, по возрастанию номера. Шаг N переводит
+# базу с формата N-1 на N.
+function Get-KitMigrations {
+    $dir = Join-Path $PSScriptRoot '..\migrations'
+    $steps = @(Get-ChildItem -LiteralPath $dir -File -Filter '*.ps1' -ErrorAction SilentlyContinue | ForEach-Object {
+            $m = [regex]::Match($_.Name, '^(\d{3})-(.+)\.ps1$')
+            if ($m.Success) { [pscustomobject]@{ number = [int]$m.Groups[1].Value; slug = $m.Groups[2].Value; path = $_.FullName } }
+        })
+    return @($steps | Sort-Object number)
+}
+
+# Формат базы, который ждёт этот кит, — номер последнего шага перевода, без шагов — 1. Числом
+# в справке или в коде он разошёлся бы с шагами молча.
+function Get-KitFormat {
+    $steps = @(Get-KitMigrations)
+    if (-not $steps.Count) { return 1 }
+    return $steps[-1].number
+}
+
 # Список копий базы. Возвращает объект или $null, если файла нет либо он
 # не разбирается: список копий отличает базу кита от произвольного каталога, на который
-# указатель попал по опечатке.
+# указатель попал по опечатке. Формат базы — целое «version» от 1: без него переводить
+# не с чего, и база не опознаётся.
 function Get-KitMarker([string]$BaseDir) {
     $path = Get-KitMarkerPath $BaseDir
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $null }
     try { $marker = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json } catch { return $null }
     if (-not $marker -or $marker.kit -ne 'agents-kit') { return $null }
+    $format = $marker.version
+    if (-not ($format -is [int] -or $format -is [long]) -or $format -lt 1) { return $null }
     return $marker
 }
 
@@ -256,13 +278,16 @@ function Test-KitWorkspaceKnown($Marker, [string]$Workspace) {
 #   NotGit      каталог вне git-репозитория
 #   NoPointer   ни каталог, ни репозиторий базы не объявили — под китом не числится
 #   BaseMissing указатель есть, каталога базы нет
-#   NotBase     каталог есть, но списка копий нет или он не читается
+#   NotBase     каталог есть, но списка копий нет, он не читается или в нём нет формата
 #   Unlisted    база есть, но эту копию не числит своей
-#   Linked      обе стороны сошлись
+#   Outdated    связь сошлась, а формат базы старше того, что ждёт кит, — перевести
+#   Newer       связь сошлась, а базу перевёл кит новее этого — обновить кит
+#   Linked      обе стороны сошлись, формат тот, что ждёт кит
 function Get-KitLinkState([string]$Dir) {
     $state = [ordered]@{
         status = 'NotGit'; workspace = $null; worktree = $null
         repo = $null; scope = ''; base = $null; marker = $null
+        format = $null; kitFormat = $null
     }
 
     $roots = Get-KitRoots $Dir
@@ -286,6 +311,21 @@ function Get-KitLinkState([string]$Dir) {
     $state.status = 'Unlisted'
 
     if (-not (Test-KitWorkspaceKnown $marker $state.workspace)) { return [pscustomobject]$state }
-    $state.status = 'Linked'
+    $state.format = [int]$marker.version
+    $state.kitFormat = Get-KitFormat
+    if ($state.format -lt $state.kitFormat) { $state.status = 'Outdated' }
+    elseif ($state.format -gt $state.kitFormat) { $state.status = 'Newer' }
+    else { $state.status = 'Linked' }
     return [pscustomobject]$state
+}
+
+# Что не так с форматом базы и что с этим делать — одной строкой для хука, гейта и скриптов.
+# У остальных состояний строки нет.
+function Get-KitFormatProblem($State) {
+    $migrate = ConvertTo-KitPath (Join-Path $PSScriptRoot 'base-migrate.ps1')
+    switch ($State.status) {
+        'Outdated' { return "база «$($State.base)» формата $($State.format), а кит ждёт формат $($State.kitFormat) — перевести её: pwsh -NoProfile -File `"$migrate`" -Path `"$($State.worktree)`"" }
+        'Newer' { return "базу «$($State.base)» перевёл на формат $($State.format) кит новее этого, а этот знает формат до $($State.kitFormat) — обновить кит" }
+    }
+    return $null
 }

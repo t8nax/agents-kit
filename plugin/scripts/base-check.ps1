@@ -233,7 +233,7 @@ function Find-KitSecrets([string]$Path, [string]$Label) {
 function Get-KitLinkFindings([string]$Base) {
     $marker = Get-KitMarker $Base
     if (-not $marker) {
-        New-KitFinding 'FAIL' 'agents-kit.json' 'списка копий нет или он не читается — это не база кита'
+        New-KitFinding 'FAIL' 'agents-kit.json' 'списка копий нет, он не читается или в нём нет формата базы — это не база кита'
         return
     }
     $list = @($marker.workspaces | Where-Object { $_ } | ForEach-Object { ConvertTo-KitPath $_ })

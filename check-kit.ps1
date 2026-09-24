@@ -34,9 +34,9 @@ function Ok  ([string]$m) { Write-Host "[ OK ]   $m"; $script:passed++ }
 function Bad ([string]$m) { Write-Host "[ FAIL ] $m" -ForegroundColor Red; $script:failed++ }
 
 # Хук читает stdin и выходит exit'ом, поэтому зовётся дочерним процессом.
-function Invoke-Hook([string]$Dir) {
+function Invoke-Hook([string]$Dir, [string]$Hook = $hook) {
     $payload = @{ cwd = $Dir } | ConvertTo-Json -Compress
-    $out = $payload | & pwsh -NoProfile -File $hook 2>$null
+    $out = $payload | & pwsh -NoProfile -File $Hook 2>$null
     if (-not $out) { return '' }
     $text = ($out -join "`n").Trim()
     if (-not $text) { return '' }
@@ -46,9 +46,9 @@ function Invoke-Hook([string]$Dir) {
 
 # Гейт коммита получает команду и каталог в stdin, как от Claude Code. Ответ — причина отказа
 # или пустая строка, если коммит идёт.
-function Invoke-CommitGate([string]$Dir, [string]$Command) {
+function Invoke-CommitGate([string]$Dir, [string]$Command, [string]$Gate = $script:gate) {
     $payload = @{ cwd = $Dir; tool_input = @{ command = $Command } } | ConvertTo-Json -Compress
-    $out = $payload | & pwsh -NoProfile -File $script:gate 2>$null
+    $out = $payload | & pwsh -NoProfile -File $Gate 2>$null
     $text = ($out -join "`n").Trim()
     if (-not $text) { return '' }
     try { return [string](($text | ConvertFrom-Json).hookSpecificOutput.permissionDecisionReason) }
@@ -144,6 +144,26 @@ function Invoke-AgentsDeploy([string]$Dir) {
     return [pscustomobject]@{ code = $LASTEXITCODE; text = ($out -join "`n") }
 }
 
+function Invoke-BaseMigrate([string]$Script, [string]$Dir) {
+    $out = & pwsh -NoProfile -File $Script -Path $Dir 2>&1
+    return [pscustomobject]@{ code = $LASTEXITCODE; text = ($out -join "`n") }
+}
+
+function Get-MarkerFormat([string]$Base) {
+    return (Get-Content -LiteralPath (Join-Path $Base 'agents-kit.json') -Raw | ConvertFrom-Json).version
+}
+
+function Set-MarkerFormat([string]$Base, $Format) {
+    $path = Join-Path $Base 'agents-kit.json'
+    $m = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+    $m | Add-Member -NotePropertyName 'version' -NotePropertyValue $Format -Force
+    $m | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $path -Encoding utf8
+}
+
+function Get-CommitCount([string]$Dir) {
+    return [int](& git -C $Dir rev-list --count HEAD)
+}
+
 function New-TestRepo([string]$Path) {
     New-Item -ItemType Directory -Force -Path $Path | Out-Null
     & git -C $Path init -q
@@ -205,6 +225,11 @@ $baseBar = Join-Path $root 'base-bar'
 $basePfx = Join-Path $root 'base-prefix'
 $renRepo = Join-Path $root 'rename'
 $renBase = Join-Path $root 'base-rename'
+$migRepo = Join-Path $root 'mig'
+$migBase = Join-Path $root 'base-mig'
+$newRepo = Join-Path $root 'mig-new'
+$newBase = Join-Path $root 'base-mig-new'
+$kitCopy = Join-Path $root 'kit-copy'
 
 try {
     New-Item -ItemType Directory -Force -Path $plain, $notbase | Out-Null
@@ -936,6 +961,141 @@ try {
     & git -C $repo config --local agents-kit.base $notbase
     Check 'каталог без agents-kit.json — не база' { ExpectText $repo 'ведёт не в базу' }
 
+    # Формат базы. Своя база и копия: список копий правится проверками и уходит в коммит базы.
+    New-TestRepo $migRepo
+    Invoke-BaseInit $migBase | Out-Null
+    & pwsh -NoProfile -File $link -Path $migRepo -Base $migBase | Out-Null
+    & git -C $migBase add agents-kit.json 2>$null
+    & git -C $migBase commit -qm 'связь' | Out-Null
+    $kitFormat = 1
+    $steps = @(Get-ChildItem -LiteralPath (Join-Path $PSScriptRoot 'plugin\migrations') -File -Filter '*.ps1' -ErrorAction SilentlyContinue |
+        ForEach-Object { if ($_.Name -match '^(\d{3})-') { [int]$Matches[1] } } | Sort-Object)
+    if ($steps.Count) { $kitFormat = $steps[-1] }
+
+    Check 'новая база — в списке копий формат, который ждёт кит' {
+        $got = Get-MarkerFormat $migBase
+        if ($got -ne $kitFormat) { return "формат $got, ожидался $kitFormat" }
+        return $null
+    }
+
+    Check 'база новее кита — остановка, гейт отказывает, отчёт link.ps1 красный' {
+        Set-MarkerFormat $migBase ($kitFormat + 1)
+        try {
+            $problem = ExpectText $migRepo 'база новее кита'
+            if ($problem) { return $problem }
+            $reason = Invoke-CommitGate $migRepo "git -C `"$migBase`" commit -m x -- product.md"
+            if ($reason -notmatch 'кит новее этого') { return "гейт не отказал: $reason" }
+            return ExpectLinkReport $migRepo 1 'формат не тот'
+        }
+        finally { & git -C $migBase checkout -q -- agents-kit.json }
+    }
+
+    Check 'список копий без формата или с нечисловым — не база' {
+        try {
+            foreach ($bad in @($null, 'abc', 0)) {
+                Set-MarkerFormat $migBase $bad
+                $problem = ExpectText $migRepo 'ведёт не в базу'
+                if ($problem) { return "version = «$bad»: $problem" }
+            }
+            return $null
+        }
+        finally { & git -C $migBase checkout -q -- agents-kit.json }
+    }
+
+    # Шаги перевода проверяются на копии кита с поддельным шагом: у самого кита их может не быть.
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'plugin') -Destination $kitCopy -Recurse
+    $copyMigrations = Join-Path $kitCopy 'migrations'
+    Remove-Item -LiteralPath $copyMigrations -Recurse -Force -ErrorAction SilentlyContinue
+    New-Item -ItemType Directory -Force -Path $copyMigrations | Out-Null
+    $copyScripts = Join-Path $kitCopy 'scripts'
+    $copyHook = Join-Path $copyScripts 'session-start.ps1'
+    $copyGate = Join-Path $copyScripts 'commit-gate.ps1'
+    $copyMigrate = Join-Path $copyScripts 'base-migrate.ps1'
+    $stepPath = Join-Path $copyMigrations '002-boundaries-to-limits.ps1'
+    Set-Content -LiteralPath $stepPath -Encoding utf8 -Value @(
+        'param([string]$Base)',
+        '$to = Join-Path $Base ''limits.md''',
+        'if (Test-Path -LiteralPath $to) { return }',
+        'Move-Item -LiteralPath (Join-Path $Base ''boundaries.md'') -Destination $to')
+
+    Check 'база в прежнем формате — остановка и команда перевода' {
+        $got = Invoke-Hook $migRepo $copyHook
+        if ($got -notmatch 'база в прежнем формате') { return "нет остановки: $($got.Split("`n")[0])" }
+        if ($got -notmatch 'base-migrate\.ps1') { return 'не названа команда перевода' }
+        if ($got -match 'Три слоя') { return 'поданы инварианты — работа со знанием не остановлена' }
+        return $null
+    }
+
+    Check 'база в прежнем формате — гейт отказывает коммиту в базу' {
+        $reason = Invoke-CommitGate $migRepo "git -C `"$migBase`" commit -m x -- product.md" $copyGate
+        if ($reason -notmatch 'кит ждёт формат 2') { return "гейт не отказал: $reason" }
+        return $null
+    }
+
+    Check 'перевод при незакоммиченном в базе — отказ, база не тронута' {
+        $stray = Join-Path $migBase 'stray.md'
+        Set-Content -LiteralPath $stray -Value 'соседняя работа' -Encoding utf8
+        try {
+            $r = Invoke-BaseMigrate $copyMigrate $migRepo
+            if ($r.code -eq 0) { return 'скрипт не отказал' }
+            if ($r.text -notmatch 'stray\.md') { return "не назван незакоммиченный файл: $($r.text)" }
+            if ((Get-MarkerFormat $migBase) -ne 1) { return 'формат поднят' }
+            if (-not (Test-Path -LiteralPath (Join-Path $migBase 'boundaries.md'))) { return 'шаг всё-таки сделан' }
+            return $null
+        }
+        finally { Remove-Item -LiteralPath $stray -Force }
+    }
+
+    Check 'перевод — шаг сделан, формат поднят, один коммит, дерево чистое, связь сошлась' {
+        $before = Get-CommitCount $migBase
+        $r = Invoke-BaseMigrate $copyMigrate $migRepo
+        if ($r.code -ne 0) { return "код возврата $($r.code): $($r.text)" }
+        if ((Get-MarkerFormat $migBase) -ne 2) { return "формат $(Get-MarkerFormat $migBase), ожидался 2" }
+        if (-not (Test-Path -LiteralPath (Join-Path $migBase 'limits.md')) -or (Test-Path -LiteralPath (Join-Path $migBase 'boundaries.md'))) { return 'шаг не сделан' }
+        if ((Get-CommitCount $migBase) -ne $before + 1) { return "коммитов прибавилось $((Get-CommitCount $migBase) - $before), ожидался 1" }
+        $dirty = @(& git -C $migBase status --porcelain | Where-Object { $_ })
+        if ($dirty.Count) { return "в базе осталось незакоммиченное: $($dirty -join '; ')" }
+        $got = Invoke-Hook $migRepo $copyHook
+        if ($got -notmatch 'проект под китом') { return "после перевода нет подачи: $($got.Split("`n")[0])" }
+        return $null
+    }
+
+    Check 'повторный перевод — переводить нечего' {
+        $r = Invoke-BaseMigrate $copyMigrate $migRepo
+        if ($r.code -ne 0 -or $r.text -notmatch 'переводить нечего') { return "код $($r.code): $($r.text)" }
+        return $null
+    }
+
+    Check 'новая база на ките с шагами — в списке копий последний формат' {
+        New-TestRepo $newRepo
+        Invoke-BaseInit $newBase | Out-Null
+        & pwsh -NoProfile -File (Join-Path $copyScripts 'link.ps1') -Path $newRepo -Base $newBase | Out-Null
+        $got = Get-MarkerFormat $newBase
+        if ($got -ne 2) { return "формат $got, ожидался 2" }
+        return $null
+    }
+
+    Check 'шаг перевода упал — его правки откачены, формат прежний, коммита нет' {
+        & git -C $migBase reset -q --hard HEAD~1
+        Set-Content -LiteralPath $stepPath -Encoding utf8 -Value @(
+            'param([string]$Base)',
+            'Set-Content -LiteralPath (Join-Path $Base ''half.md'') -Value ''полшага''',
+            'Set-Content -LiteralPath (Join-Path $Base ''product.md'') -Value ''испорчено''',
+            'throw ''boundaries.md не опознан''')
+        $before = Get-CommitCount $migBase
+        $product = Get-Content -LiteralPath (Join-Path $migBase 'product.md') -Raw
+        $r = Invoke-BaseMigrate $copyMigrate $migRepo
+        if ($r.code -eq 0) { return 'скрипт не отказал' }
+        if ($r.text -notmatch 'boundaries\.md не опознан') { return "не названа причина: $($r.text)" }
+        if ((Get-MarkerFormat $migBase) -ne 1) { return 'формат поднят' }
+        if ((Get-CommitCount $migBase) -ne $before) { return 'коммит всё-таки сделан' }
+        # Концы строк при откате ставит git по настройке машины, сравнивается текст.
+        if ((Get-Content -LiteralPath (Join-Path $migBase 'product.md') -Raw).Replace("`r`n", "`n") -ne $product.Replace("`r`n", "`n")) { return 'product.md не откачен' }
+        $dirty = @(& git -C $migBase status --porcelain --untracked-files=all | Where-Object { $_ })
+        if ($dirty.Count) { return "в базе осталось: $($dirty -join '; ')" }
+        return $null
+    }
+
     # Дальше — не стенд, а сам репозиторий кита.
     $kit = $PSScriptRoot
 
@@ -974,6 +1134,19 @@ try {
     }
 
     $kitFiles = Get-KitFiles $kit
+
+    # Формат, который ждёт кит, — номер последнего шага: пропуск или повтор номера оставил бы
+    # базу без перевода на этот формат.
+    Check 'шаги перевода базы пронумерованы подряд с 002' {
+        $names = @($kitFiles | Where-Object { $_ -like 'plugin/migrations/*' } | ForEach-Object { $_.Substring('plugin/migrations/'.Length) })
+        $bad = @($names | Where-Object { $_ -notmatch '^\d{3}-[a-z0-9]+(-[a-z0-9]+)*\.ps1$' })
+        if ($bad.Count) { return "не по форме NNN-<слаг>.ps1: $($bad -join ', ')" }
+        $numbers = @($names | ForEach-Object { [int]$_.Substring(0, 3) } | Sort-Object)
+        for ($i = 0; $i -lt $numbers.Count; $i++) {
+            if ($numbers[$i] -ne $i + 2) { return "номера шагов $($numbers -join ', ') — ожидались подряд с 2" }
+        }
+        return $null
+    }
 
     # Установка копирует каталог source целиком: что лежит в нём, едет пользователю кита.
     Check 'пользователю едет только plugin — правки кита в нём нет' {

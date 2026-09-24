@@ -26,7 +26,8 @@ switch ($state.status) {
     'NotGit'    { throw "«$target» не под git — это не рабочая копия проекта под китом" }
     'NoPointer' { throw "каталог «$($state.workspace)» под китом не числится — удалять его киту нечем" }
     'Linked'    { }
-    default     { throw "связь копии «$($state.workspace)» с базой разорвана — link.ps1 без аргументов покажет, что именно" }
+    { $_ -in 'Outdated', 'Newer' } { throw (Get-KitFormatProblem $state) }
+    default    { throw "связь копии «$($state.workspace)» с базой разорвана — link.ps1 без аргументов покажет, что именно" }
 }
 
 $tree = Get-KitTreeRoot $target

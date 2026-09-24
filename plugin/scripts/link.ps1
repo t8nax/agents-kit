@@ -44,7 +44,7 @@ if (-not $Base) {
             exit 1
         }
         'NotBase' {
-            Write-Host "База:          списка копий нет или он не читается — это не база кита" -ForegroundColor Red
+            Write-Host "База:          списка копий нет, он не читается или в нём нет формата базы — это не база кита" -ForegroundColor Red
             exit 1
         }
         'Unlisted' {
@@ -54,8 +54,12 @@ if (-not $Base) {
             Write-Host "               связать: link.ps1$scopeArg -Base `"$($state.base)`""
             exit 1
         }
+        { $_ -in 'Outdated', 'Newer' } {
+            Write-Host "База:          формат не тот: $(Get-KitFormatProblem $state)" -ForegroundColor Red
+            exit 1
+        }
         'Linked' {
-            Write-Host "База:          связь двусторонняя" -ForegroundColor Green
+            Write-Host "База:          связь двусторонняя, формат $($state.format)" -ForegroundColor Green
             exit 0
         }
     }
@@ -88,7 +92,7 @@ if (-not $marker) {
     if (Test-Path -LiteralPath $markerPath -PathType Leaf) {
         throw "«$markerPath» существует, но не разбирается как список копий базы — разобраться должен оператор"
     }
-    $marker = [pscustomobject][ordered]@{ kit = 'agents-kit'; version = 1; workspaces = @() }
+    $marker = [pscustomobject][ordered]@{ kit = 'agents-kit'; version = (Get-KitFormat); workspaces = @() }
     Write-Host "Заведён список копий базы: $markerPath"
 }
 

@@ -127,8 +127,11 @@ try {
     if (-not $cwd -or -not (Test-Path -LiteralPath $cwd -PathType Container)) { exit 0 }
 
     $state = Get-KitLinkState $cwd
-    if ($state.status -ne 'Linked') { exit 0 }
+    if ($state.status -notin 'Linked', 'Outdated', 'Newer') { exit 0 }
     $worktree = $state.worktree
+    # Базу другого формата сверка по текущим правилам не рассудит, а коммит в неё — это запись
+    # по прежним правилам поверх новых или наоборот.
+    $formatProblem = Get-KitFormatProblem $state
 
     $findings = @()
     $dir = ConvertTo-KitPath $cwd
@@ -148,6 +151,14 @@ try {
         if (-not $call) { continue }
         $top = Invoke-KitGit $call.dir @('rev-parse', '--show-toplevel')
         if (-not $top -or (ConvertTo-KitPath $top) -ine $state.base) { continue }
+        if ($formatProblem) {
+            Emit 'deny' @"
+agents-kit: коммит в базу знаний остановлен — $formatProblem.
+
+Базу переводят по слову оператора, когда другие сессии проекта закрыты: спросить оператора.
+"@
+            exit 0
+        }
 
         $files = Get-KitCommitFiles $call $state.base
         $findings += @(Get-KitCommitFindings $state.base $worktree $files)
