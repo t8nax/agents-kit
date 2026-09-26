@@ -16,6 +16,7 @@
 $script:KitServedFiles = @('product.md', 'boundaries.md')
 $script:KitDecisionsDir = 'decisions'
 $script:KitAgentsDir = 'agents'
+$script:KitArtifactsDir = 'artifacts'
 # Флоу — каталог: scenarios.md со списками сценариев и stages/ с файлами этапов. Ссылка
 # в списке ведёт в stages/ от scenarios.md.
 $script:KitFlowDir = 'flow'
@@ -147,7 +148,7 @@ function Read-KitReference([string]$Name) {
 # Потолки и ключи из справок кита. Несошедшийся разбор не молчит: файл без разобранного
 # правила даёт FAIL, а не проходит непроверенным.
 function Get-KitLayoutRules {
-    $result = @{ files = @{}; memory = $null; decision = $null; flowKeys = [ordered]@{}; executors = @(); questionKeys = [ordered]@{}; backlogFields = [ordered]@{} }
+    $result = @{ files = @{}; memory = $null; decision = $null; artifact = $null; flowKeys = [ordered]@{}; executors = @(); questionKeys = [ordered]@{}; backlogFields = [ordered]@{} }
 
     # Таблица ключей — единственная в своём разделе с колонкой «да/нет».
     $memoryText = Read-KitReference 'task-memory.md'
@@ -180,6 +181,9 @@ function Get-KitLayoutRules {
 
     $decision = [regex]::Match($text, '(?m)^Потолок файла решений — (\d+) строк\.')
     if ($decision.Success) { $result.decision = [int]$decision.Groups[1].Value }
+
+    $artifact = [regex]::Match($text, 'Потолок артефакта — (\d+) МБ\.')
+    if ($artifact.Success) { $result.artifact = [int]$artifact.Groups[1].Value }
     return $result
 }
 
@@ -511,6 +515,70 @@ function Get-KitDecisionFindings([string]$Base, $Rules) {
         if ($item.PSIsContainer) { New-KitFinding 'WARN' $label "подкаталог в $($script:KitDecisionsDir)/ — решения лежат плоско, файлом на область"; continue }
         if ($item.Extension -ine '.md') { New-KitFinding 'WARN' $label "не .md в $($script:KitDecisionsDir)/ — каталог держит только файлы решений"; continue }
         Get-KitDecisionFileFindings (ConvertTo-KitPath $item.FullName) $label $Rules
+    }
+}
+
+# Ссылка на артефакт — путь artifacts/<имя> в тексте .md, каким его видит сессия; ../ спереди —
+# та же ссылка из подкаталога базы. Перед artifacts/ стоит каталог — это путь проекта, а не
+# базы. Точка и двоеточие в конце — знак препинания, а не имя.
+function Get-KitArtifactRefs([string]$Text) {
+    $names = @{}
+    foreach ($m in [regex]::Matches($Text, '(?<![\w./\\-])(?:\.\./)*artifacts/([^\s`''"()<>\[\]|,;*/\\]+)')) {
+        $name = $m.Groups[1].Value.TrimEnd('.', ':')
+        if ($name) { $names[$name.ToLowerInvariant()] = $name }
+    }
+    return $names
+}
+
+# Кто держит артефакты: имя в нижнем регистре → { name; holders }. Ссылки ищутся во всех .md
+# базы на диске, и в незакоммиченных: соседняя копия держит свой файл ссылкой, которую ещё не
+# закоммитила. Файл ссылается на артефакт, а не артефакт на файл, поэтому обхода у ссылок нет.
+# Обход каталога, а не git ls-files: тот экранирует кириллицу в путях.
+function Get-KitArtifactHolders([string]$Base) {
+    $refs = @{}
+    foreach ($file in @(Get-ChildItem -LiteralPath $Base -Recurse -File -Filter '*.md' -ErrorAction SilentlyContinue)) {
+        $path = ConvertTo-KitPath $file.FullName
+        $label = Get-KitRelativePath $Base $path
+        if ($label -match '^(\.git|local)\\') { continue }
+        $found = Get-KitArtifactRefs (Read-KitMarkdown $path)
+        foreach ($key in $found.Keys) {
+            if (-not $refs.ContainsKey($key)) { $refs[$key] = [pscustomobject]@{ name = $found[$key]; holders = [System.Collections.Generic.List[string]]::new() } }
+            $refs[$key].holders.Add($label)
+        }
+    }
+    return $refs
+}
+
+function Get-KitArtifactSizeFindings([string]$Path, [string]$Label, $Rules) {
+    if (-not $Rules.artifact) {
+        New-KitFinding 'FAIL' $Label 'потолок не разобран — в раскладке нет строки «Потолок артефакта — N МБ.»'
+        return
+    }
+    $size = (Get-Item -LiteralPath $Path -Force).Length
+    if ($size -gt $Rules.artifact * 1MB) {
+        New-KitFinding 'FAIL' $Label "$([math]::Round($size / 1MB, 1)) МБ при потолке $($Rules.artifact) МБ — крупный файл в базу не кладётся: артефактом становится внешний адрес"
+    }
+}
+
+function Get-KitArtifactFindings([string]$Base, $Rules) {
+    $dir = Join-Path $Base $script:KitArtifactsDir
+    $refs = Get-KitArtifactHolders $Base
+    $present = @{}
+    foreach ($item in @(Get-ChildItem -LiteralPath $dir -Force -ErrorAction SilentlyContinue | Sort-Object Name)) {
+        $label = Get-KitRelativePath $Base (ConvertTo-KitPath $item.FullName)
+        if ($item.PSIsContainer) { New-KitFinding 'WARN' $label "подкаталог в $($script:KitArtifactsDir)/ — артефакты лежат плоско, файлом на артефакт"; continue }
+        $present[$item.Name.ToLowerInvariant()] = $true
+        Get-KitArtifactSizeFindings (ConvertTo-KitPath $item.FullName) $label $Rules
+        if (-not $refs.ContainsKey($item.Name.ToLowerInvariant())) {
+            New-KitFinding 'WARN' $label 'на артефакт не ссылается ни один .md базы — нужен: сослаться на него, нет: удалить git rm'
+        }
+    }
+    # Висящая ссылка — предупреждение: artifacts/ бывает и каталогом проекта, названным в тексте.
+    foreach ($key in @($refs.Keys | Sort-Object)) {
+        if ($present.ContainsKey($key)) { continue }
+        foreach ($holder in $refs[$key].holders) {
+            New-KitFinding 'WARN' $holder "ссылка на $($script:KitArtifactsDir)/$($refs[$key].name) — такого файла в базе нет: вернуть файл или убрать ссылку"
+        }
     }
 }
 
@@ -1283,6 +1351,7 @@ function Get-KitBaseFindings([string]$Base, [string]$Worktree) {
     Get-KitGitFindings $Base
     Get-KitRootFindings $Base $rules
     Get-KitDecisionFindings $Base $rules
+    Get-KitArtifactFindings $Base $rules
     Get-KitAgentFindings $Base $Worktree
     Get-KitFlowFindings $Base $Worktree $rules
     Get-KitWorkFindings $Base $Worktree $rules
@@ -1294,8 +1363,8 @@ function Get-KitBaseFindings([string]$Base, [string]$Worktree) {
     }
 }
 
-# Files — абсолютные пути. Удалённый файл не проверяется: закрыть задачу удалением
-# памяти можно всегда, и чинить в нём уже нечего.
+# Files — абсолютные пути. Удалённый файл не проверяется: чинить в нём уже нечего. Но
+# артефакты, на которые он ссылался, проверяются: закрытие задачи не оставляет файлов без ссылок.
 function Get-KitCommitFindings([string]$Base, [string]$Worktree, [string[]]$Files) {
     $Base = ConvertTo-KitPath $Base
     $rules = Get-KitLayoutRules
@@ -1305,6 +1374,9 @@ function Get-KitCommitFindings([string]$Base, [string]$Worktree, [string[]]$File
 
     $seen = @{}
     $flowTouched = $false
+    # Артефакты, которые коммит мог оставить без ссылок: положенные им и те, на которые в HEAD
+    # ссылались его .md.
+    $artifacts = @{}
     foreach ($file in @($Files | Where-Object { $_ })) {
         $path = ConvertTo-KitPath $file
         if (-not $path.StartsWith($Base + '\', [StringComparison]::OrdinalIgnoreCase)) { continue }
@@ -1314,11 +1386,22 @@ function Get-KitCommitFindings([string]$Base, [string]$Worktree, [string[]]$File
         # Удалённый этап ломает сценарий, который на него ссылается, поэтому сверку флоу
         # запускает и удаление.
         if ($rel -match "^$($script:KitFlowDir)\\") { $flowTouched = $true }
+        if ($rel -match '\.md$' -and $rel -notmatch '^local\\') {
+            $previous = & git -C $Base show "HEAD:$($rel.Replace([char]92, [char]47))" 2>$null
+            if ($LASTEXITCODE -eq 0 -and $previous) {
+                $was = Get-KitArtifactRefs (ConvertTo-KitMarkdown ($previous -join "`n"))
+                foreach ($key in $was.Keys) { $artifacts[$key] = $was[$key] }
+            }
+        }
         if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { continue }
 
         if ($rel -match '^local\\') {
             New-KitFinding 'FAIL' $rel 'файл из local/ в коммите — значения кредов в git базы не попадают'
             continue
+        }
+        if ($rel -match "^$($script:KitArtifactsDir)\\([^\\]+)$") {
+            $artifacts[$Matches[1].ToLowerInvariant()] = $Matches[1]
+            Get-KitArtifactSizeFindings $path $rel $rules
         }
         if ($rel -notmatch '\\' -and $rel -match '\.md$') {
             if ($script:KitServedFiles -contains $rel) { Get-KitKnowledgeCeilingFindings $path $rel $rules }
@@ -1341,4 +1424,13 @@ function Get-KitCommitFindings([string]$Base, [string]$Worktree, [string[]]$File
         Find-KitSecrets $path $rel
     }
     if ($flowTouched) { Get-KitFlowFindings $Base $Worktree $rules }
+
+    if (-not $artifacts.Count) { return }
+    $refs = Get-KitArtifactHolders $Base
+    foreach ($key in @($artifacts.Keys | Sort-Object)) {
+        $name = $artifacts[$key]
+        $path = Join-Path (Join-Path $Base $script:KitArtifactsDir) $name
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf) -or $refs.ContainsKey($key)) { continue }
+        New-KitFinding 'FAIL' "$($script:KitArtifactsDir)\$name" 'после коммита на артефакт не ссылается ни один .md базы — удалить его git rm тем же коммитом или сослаться на него'
+    }
 }

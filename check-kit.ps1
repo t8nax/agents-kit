@@ -238,6 +238,8 @@ $baseBar = Join-Path $root 'base-bar'
 $basePfx = Join-Path $root 'base-prefix'
 $renRepo = Join-Path $root 'rename'
 $renBase = Join-Path $root 'base-rename'
+$artRepo = Join-Path $root 'art'
+$artBase = Join-Path $root 'base-art'
 $migRepo = Join-Path $root 'mig'
 $migBase = Join-Path $root 'base-mig'
 $newRepo = Join-Path $root 'mig-new'
@@ -585,6 +587,95 @@ try {
             @('### Шаги', '- [x] дочитать формат позиции — результат: формат в a.txt — проверен: прочитан файл'))
         $reason = Invoke-CommitGate $renRepo $renCommit
         if ($reason -match 'появилась уже закрытой') { return "гейт принял возврат заголовка за новые шаги: $reason" }
+        return $null
+    }
+
+    # Артефакты: файл живёт, пока на него ссылается .md базы. Своя база — закрытие задачи
+    # коммитом гейт судит по HEAD, и чужие коммиты стенда его сдвигали бы.
+    New-TestRepo $artRepo
+    Invoke-BaseInit $artBase | Out-Null
+    & pwsh -NoProfile -File $link -Path $artRepo -Base $artBase | Out-Null
+    $artDir = Join-Path $artBase 'artifacts'
+    $artFile = Join-Path $artDir 'ORD-1-макет.png'
+    $artMem = Get-HookMemoryPath $artRepo
+    $artBacklog = Join-Path $artBase 'backlog.md'
+    $artBacklogSaved = Get-Content -LiteralPath $artBacklog -Raw
+    New-Item -ItemType Directory -Force -Path $artDir | Out-Null
+    Set-Content -LiteralPath $artFile -Value 'png'
+    Set-KitMemory $artMem $artRepo 'сверить макет'
+    Add-Content -LiteralPath $artMem -Encoding utf8 -Value '', '## Артефакты', '- макет: artifacts/ORD-1-макет.png.'
+    & git -C $artBase add -A 2>$null
+    & git -C $artBase commit -qm 'задача с артефактом' | Out-Null
+    $artHook = Invoke-Hook $artRepo
+
+    Check 'артефакт со ссылкой из памяти — сверка молчит о нём' {
+        return Test-HookText $artHook -Lacks 'ORD-1-макет.png` —', 'такого файла в базе нет'
+    }
+
+    Check 'на артефакт никто не ссылается — сверка называет' {
+        Set-Content -LiteralPath (Join-Path $artDir 'лишний.log') -Value 'x'
+        $problem = ExpectText $artRepo 'artifacts\лишний.log` — на артефакт не ссылается'
+        Remove-Item -LiteralPath (Join-Path $artDir 'лишний.log') -Force
+        return $problem
+    }
+
+    Check 'ссылка на артефакт, которого нет, — сверка называет; путь проекта — нет' {
+        New-Item -ItemType Directory -Force -Path (Join-Path $artBase 'decisions') | Out-Null
+        $decision = Join-Path $artBase 'decisions\build.md'
+        Set-Content -LiteralPath $decision -Encoding utf8 -Value '# Сборка', 'когда: правка сборки', '',
+            '## Выход', '- сборка кладёт пакет в build/artifacts/pkg.zip', '- схема сборки — artifacts/схема.svg'
+        $problem = ExpectText $artRepo 'artifacts/схема.svg — такого файла в базе нет' -Lacks 'artifacts/pkg.zip'
+        Remove-Item -LiteralPath (Join-Path $artBase 'decisions') -Recurse -Force
+        return $problem
+    }
+
+    Check 'подкаталог в artifacts/ — сверка называет' {
+        New-Item -ItemType Directory -Force -Path (Join-Path $artDir 'shots') | Out-Null
+        $problem = ExpectText $artRepo 'артефакты лежат плоско'
+        Remove-Item -LiteralPath (Join-Path $artDir 'shots') -Recurse -Force
+        return $problem
+    }
+
+    # Потолок читается из раскладки: число в тексте проверки — то же, что в справке.
+    Check 'артефакт больше потолка — сверка и гейт называют' {
+        $big = Join-Path $artDir 'дамп.bin'
+        [System.IO.File]::WriteAllBytes($big, [byte[]]::new(6MB))
+        Add-Content -LiteralPath $artMem -Encoding utf8 -Value '- дамп: artifacts/дамп.bin'
+        $problem = ExpectText $artRepo 'при потолке 5 МБ'
+        if (-not $problem) {
+            $reason = Invoke-CommitGate $artRepo "git -C `"$artBase`" commit -m x -- `"$big`" `"$artMem`""
+            if ($reason -notmatch 'при потолке 5 МБ') { $problem = "гейт не остановил: «$reason»" }
+        }
+        Remove-Item -LiteralPath $big -Force
+        & git -C $artBase checkout -q -- $artMem 2>$null
+        return $problem
+    }
+
+    Check 'закрытие задачи оставляет артефакт без ссылок — гейт останавливает' {
+        & git -C $artBase rm -q -- $artMem
+        $reason = Invoke-CommitGate $artRepo "git -C `"$artBase`" commit -m закрыта -- `"$artMem`""
+        if ($reason -notmatch 'ORD-1-макет.png` — после коммита на артефакт не ссылается') { return "гейт не остановил: «$reason»" }
+        return $null
+    }
+
+    Check 'закрытие задачи вместе с git rm артефакта — гейт пускает' {
+        & git -C $artBase rm -q -- $artFile
+        $reason = Invoke-CommitGate $artRepo "git -C `"$artBase`" commit -m закрыта -- `"$artMem`" `"$artFile`""
+        & git -C $artBase reset -q HEAD -- $artMem $artFile 2>$null
+        & git -C $artBase checkout -q -- $artMem $artFile 2>$null
+        if ($reason -match 'после коммита на артефакт') { return "гейт остановил: $reason" }
+        return $null
+    }
+
+    Check 'закрытие задачи, артефакт держит запись бэклога — гейт пускает' {
+        Add-Content -LiteralPath $artBacklog -Encoding utf8 -Value '', '## ORD-1 сверить с макетом через месяц', '', 'Сравнить экран с макетом.', '',
+            '### Артефакты', '- макет: artifacts/ORD-1-макет.png'
+        & git -C $artBase rm -q -- $artMem
+        $reason = Invoke-CommitGate $artRepo "git -C `"$artBase`" commit -m закрыта -- `"$artMem`" `"$artBacklog`""
+        & git -C $artBase reset -q HEAD -- $artMem 2>$null
+        & git -C $artBase checkout -q -- $artMem 2>$null
+        Set-Content -LiteralPath $artBacklog -Encoding utf8 -Value $artBacklogSaved -NoNewline
+        if ($reason -match 'после коммита на артефакт') { return "гейт остановил: $reason" }
         return $null
     }
 
