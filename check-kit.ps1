@@ -33,7 +33,7 @@ $script:failed = 0
 function Ok  ([string]$m) { Write-Host "[ OK ]   $m"; $script:passed++ }
 function Bad ([string]$m) { Write-Host "[ FAIL ] $m" -ForegroundColor Red; $script:failed++ }
 
-# Хук читает stdin и выходит exit'ом, поэтому зовётся дочерним процессом.
+# Хук зовётся дочерним процессом, как его зовёт Claude Code: читает stdin и выходит exit'ом.
 function Invoke-Hook([string]$Dir, [string]$Hook = $hook) {
     $payload = @{ cwd = $Dir } | ConvertTo-Json -Compress
     $out = $payload | & pwsh -NoProfile -File $Hook 2>$null
@@ -69,20 +69,36 @@ function ExpectSilent([string]$Dir) {
     return $null
 }
 
-function ExpectText([string]$Dir, [string]$Needle) {
-    $got = Invoke-Hook $Dir
-    if (-not $got) { return "ожидался текст про «$Needle», хук промолчал" }
-    if ($got -notmatch [regex]::Escape($Needle)) { return "в ответе нет «$Needle»: $($got.Split("`n")[0])" }
+# Ответ хука проверяется отдельно от вызова: на одно состояние стенда хук зовётся один раз,
+# сколько бы строк ни ждали от этого ответа проверки.
+function Test-HookText([string]$Got, [string[]]$Has = @(), [string[]]$Lacks = @()) {
+    if (-not $Got) {
+        if ($Has.Count) { return "ожидался текст про «$($Has[0])», хук промолчал" }
+        return 'хук промолчал — проверять нечего'
+    }
+    foreach ($needle in $Has) {
+        if ($Got -notmatch [regex]::Escape($needle)) { return "в ответе нет «$needle»: $($Got.Split("`n")[0])" }
+    }
+    foreach ($needle in $Lacks) {
+        if ($Got -match [regex]::Escape($needle)) { return "в ответе есть «$needle», хотя его там быть не должно" }
+    }
     return $null
 }
 
+function ExpectText([string]$Dir, [string[]]$Needle, [string[]]$Lacks = @()) {
+    return Test-HookText (Invoke-Hook $Dir) $Needle $Lacks
+}
+
 # Адрес памяти берётся из того же текста, что видит сессия: он и есть контракт хука.
-function Get-HookMemoryPath([string]$Dir) {
-    $got = Invoke-Hook $Dir
-    if (-not $got) { return $null }
-    $m = [regex]::Match($got, '`([^`]+\\work\\[^`]+\.md)`')
+function Find-HookMemoryPath([string]$Got) {
+    if (-not $Got) { return $null }
+    $m = [regex]::Match($Got, '`([^`]+\\work\\[^`]+\.md)`')
     if (-not $m.Success) { return $null }
     return $m.Groups[1].Value
+}
+
+function Get-HookMemoryPath([string]$Dir) {
+    return Find-HookMemoryPath (Invoke-Hook $Dir)
 }
 
 function Set-KitMemory([string]$Path, [string]$Worktree, [string]$Step) {
@@ -95,11 +111,8 @@ function Set-KitMemory([string]$Path, [string]$Worktree, [string]$Step) {
         '- [ ] ' + $Step)
 }
 
-function ExpectNoText([string]$Dir, [string]$Needle) {
-    $got = Invoke-Hook $Dir
-    if (-not $got) { return "хук промолчал — проверять нечего" }
-    if ($got -match [regex]::Escape($Needle)) { return "в ответе есть «$Needle», хотя его там быть не должно" }
-    return $null
+function ExpectNoText([string]$Dir, [string[]]$Needle) {
+    return Test-HookText (Invoke-Hook $Dir) -Lacks $Needle
 }
 
 # Состояние связи переводят двое — хук и link.ps1, — и проверяются оба.
@@ -291,23 +304,26 @@ try {
 
     # Дальше — склейка с первым скриптом: базу завёл base-init.ps1, связывает link.ps1.
     & pwsh -NoProfile -File $link -Path $repo -Base $base | Out-Null
-    Check 'связанная копия — путь базы в контексте' { ExpectText $repo $base }
-    Check 'связанная копия — инварианты в контексте' { ExpectText $repo 'Три слоя' }
-    Check 'связанная копия — путь раскладки в контексте' { ExpectText $repo 'base-layout.md' }
-    Check 'связанная копия — путь правил памяти в контексте' { ExpectText $repo 'task-memory.md' }
-    Check 'связанная копия — путь правил записи бэклога в контексте' { ExpectText $repo 'backlog-record.md' }
-    Check 'связанная копия — путь глоссария в контексте' { ExpectText $repo 'glossary.md' }
-    Check 'связанная копия — отчёт link.ps1 зелёный' { ExpectLinkReport $repo 0 'связь двусторонняя' }
-
     # Строка, которой неоткуда взяться, кроме файла базы.
-    Check 'связанная копия — содержимое базы в контексте' {
-        Set-Content -LiteralPath (Join-Path $base 'product.md') -Encoding utf8 `
-            -Value '# Сверочный сервис — продукт', '', 'сверка остатков идёт ночным прогоном', '<!-- пример в комментарии шаблона -->'
-        return ExpectText $repo 'сверка остатков идёт ночным прогоном'
-    }
+    Set-Content -LiteralPath (Join-Path $base 'product.md') -Encoding utf8 `
+        -Value '# Сверочный сервис — продукт', '', 'сверка остатков идёт ночным прогоном', '<!-- пример в комментарии шаблона -->'
+    $linked = Invoke-Hook $repo
+    Check 'связанная копия — путь базы в контексте' { Test-HookText $linked $base }
+    Check 'связанная копия — инварианты в контексте' { Test-HookText $linked 'Три слоя' }
+    Check 'связанная копия — путь раскладки в контексте' { Test-HookText $linked 'base-layout.md' }
+    Check 'связанная копия — путь правил памяти в контексте' { Test-HookText $linked 'task-memory.md' }
+    Check 'связанная копия — путь правил записи бэклога в контексте' { Test-HookText $linked 'backlog-record.md' }
+    Check 'связанная копия — путь глоссария в контексте' { Test-HookText $linked 'glossary.md' }
+    Check 'связанная копия — отчёт link.ps1 зелёный' { ExpectLinkReport $repo 0 'связь двусторонняя' }
+    Check 'связанная копия — содержимое базы в контексте' { Test-HookText $linked 'сверка остатков идёт ночным прогоном' }
 
     # Имя проекта — заголовок product.md без хвоста каркаса.
-    Check 'связанная копия — имя проекта в шапке подачи' { ExpectText $repo "- Проект: Сверочный сервис`n" }
+    Check 'связанная копия — имя проекта в шапке подачи' { Test-HookText $linked "- Проект: Сверочный сервис`n" }
+    Check 'пример из HTML-комментария в контекст не попадает' { Test-HookText $linked -Lacks 'пример в комментарии шаблона' }
+
+    # Решения подаются оглавлением: строка «когда:» приезжает, тело файла — нет.
+    $decisionsDir = Join-Path $base 'decisions'
+    Check 'решений нет — сессии названо, куда их заводить' { Test-HookText $linked 'решений пока нет' }
 
     Check 'файл в корне базы сверх подаваемых — в контекст не попадает' {
         Set-Content -LiteralPath (Join-Path $base 'extra.md') -Encoding utf8 `
@@ -326,8 +342,7 @@ try {
         Set-Content -LiteralPath $flow -Encoding utf8 -Value '# Сценарии', '', '## Метка сценария вне подачи', '1. [Ветка](stages/branch.md)'
         Set-Content -LiteralPath (Join-Path $stages 'branch.md') -Encoding utf8 `
             -Value '# Ветка', '', 'исполнитель: оркестратор', 'выход: ветка', '', '1. Метка этапа вне подачи.'
-        $problem = ExpectNoText $repo 'Метка сценария вне подачи'
-        if (-not $problem) { $problem = ExpectNoText $repo 'Метка этапа вне подачи' }
+        $problem = ExpectNoText $repo 'Метка сценария вне подачи', 'Метка этапа вне подачи'
         Set-Content -LiteralPath $flow -Encoding utf8 -Value $saved -NoNewline
         Remove-Item -LiteralPath $stages -Recurse -Force
         return $problem
@@ -357,9 +372,7 @@ try {
             Set-Content -LiteralPath (Join-Path $stages "$($s[0]).md") -Encoding utf8 `
                 -Value "# $($s[1])", '', 'исполнитель: оркестратор', 'выход: коммит'
         }
-        $problem = ExpectText $repo 'этап не входит ни в один сценарий'
-        if (-not $problem) { $problem = ExpectNoText $repo 'пункт 2: возврат' }
-        if (-not $problem) { $problem = ExpectNoText $repo 'не возврат' }
+        $problem = ExpectText $repo 'этап не входит ни в один сценарий' -Lacks 'пункт 2: возврат', 'не возврат'
         Set-Content -LiteralPath $flow -Encoding utf8 -Value $saved -NoNewline
         Remove-Item -LiteralPath $stages -Recurse -Force
         return $problem
@@ -383,65 +396,58 @@ try {
         return $problem
     }
 
-    Check 'пример из HTML-комментария в контекст не попадает' { ExpectNoText $repo 'пример в комментарии шаблона' }
-
-    # Решения подаются оглавлением: строка «когда:» приезжает, тело файла — нет.
-    $decisionsDir = Join-Path $base 'decisions'
-    Check 'решений нет — сессии названо, куда их заводить' {
-        return ExpectText $repo 'решений пока нет'
-    }
-
     Check 'файл решений — строка «когда:» в контексте, тело — нет' {
         New-Item -ItemType Directory -Force -Path $decisionsDir | Out-Null
         Set-Content -LiteralPath (Join-Path $decisionsDir 'api.md') -Encoding utf8 `
             -Value '# API', 'когда: правка эндпоинтов накладной', '', '## Форма', '- тело решения вне подачи'
-        $problem = ExpectText $repo 'правка эндпоинтов накладной'
-        if ($problem) { return $problem }
-        return ExpectNoText $repo 'тело решения вне подачи'
+        return ExpectText $repo 'правка эндпоинтов накладной' -Lacks 'тело решения вне подачи'
     }
 
     Check 'файл решений без «когда:» — в оглавление не попадает' {
         Set-Content -LiteralPath (Join-Path $decisionsDir 'deploy.md') -Encoding utf8 `
             -Value '# Развёртывание', '', '- метка файла без строки когда'
-        $problem = ExpectNoText $repo 'decisions/deploy.md` — когда'
-        if (-not $problem) { $problem = ExpectText $repo 'нет строки «когда:»' }
+        $problem = ExpectText $repo 'нет строки «когда:»' -Lacks 'decisions/deploy.md` — когда'
         Remove-Item -LiteralPath (Join-Path $decisionsDir 'deploy.md') -Force
         return $problem
     }
 
-    # Один пропавший файл не должен уносить с собой подачу остальных.
-    Check 'файла базы нет — подача остального цела' {
-        Remove-Item -LiteralPath (Join-Path $base 'boundaries.md') -Force
-        return ExpectText $repo 'сверка остатков идёт ночным прогоном'
-    }
+    # Один пропавший файл не должен уносить с собой подачу остальных. Этим же ответом хука
+    # назван адрес памяти, которой ещё нет.
+    Remove-Item -LiteralPath (Join-Path $base 'boundaries.md') -Force
+    New-Item -ItemType Directory -Force -Path (Join-Path $base 'work') | Out-Null
+    $noMemory = Invoke-Hook $repo
+    Check 'файла базы нет — подача остального цела' { Test-HookText $noMemory 'сверка остатков идёт ночным прогоном' }
 
     # Память: своя приезжает, соседняя — нет. Адрес берётся из вывода хука, а не той же
     # формулой — иначе проверка подтвердила бы ошибку реализации.
-    New-Item -ItemType Directory -Force -Path (Join-Path $base 'work') | Out-Null
-
     Check 'памяти нет — сессия получает её адрес' {
-        $script:memRepo = Get-HookMemoryPath $repo
+        $script:memRepo = Find-HookMemoryPath $noMemory
         if (-not $script:memRepo) { return 'хук не назвал адрес памяти' }
         if ($script:memRepo -notmatch [regex]::Escape($base)) { return "адрес вне базы: $script:memRepo" }
         return $null
     }
 
-    Check 'память своей копии — в контексте' {
-        Set-KitMemory $script:memRepo $repo 'дочитать формат позиции'
-        return ExpectText $repo 'дочитать формат позиции'
-    }
-
     # Сценарий задачи сверка сводит со строкой памяти: без неё не видно, по какому списку идёт задача.
-    Check 'память без строки «сценарий:» — сверка называет' { ExpectText $repo 'нет строки «сценарий:»' }
+    $withMemory = $null
+    if ($script:memRepo) {
+        Set-KitMemory $script:memRepo $repo 'дочитать формат позиции'
+        $withMemory = Invoke-Hook $repo
+    }
+    Check 'память своей копии — в контексте' {
+        if (-not $script:memRepo) { return 'хук не назвал адрес памяти — положить её некуда' }
+        return Test-HookText $withMemory 'дочитать формат позиции'
+    }
+    Check 'память без строки «сценарий:» — сверка называет' {
+        if (-not $script:memRepo) { return 'хук не назвал адрес памяти — положить её некуда' }
+        return Test-HookText $withMemory 'нет строки «сценарий:»'
+    }
 
     # Файл без объявленной копии не подаётся, но лежит по своему адресу: сессии называется
     # строка починки, иначе она бросит свою работу как чужую.
     Check 'файл без объявленной копии — сессии названа строка, которой чинится' {
         Set-Content -LiteralPath $script:memRepo -Encoding utf8 `
             -Value '# Разбор накладной', '## Агенту', '### Шаги', '- [ ] файл без объявленной копии'
-        $problem = ExpectText $repo 'рабочая копия: '
-        if ($problem) { return $problem }
-        $problem = ExpectNoText $repo 'файл без объявленной копии'
+        $problem = ExpectText $repo 'рабочая копия: ' -Lacks 'файл без объявленной копии'
         Set-KitMemory $script:memRepo $repo 'дочитать формат позиции'
         return $problem
     }
@@ -449,17 +455,16 @@ try {
     # Ветка память не адресует.
     Check 'ветка переименована — адрес прежний, память на месте' {
         & git -C $repo branch -m razbor-nakladnoy
-        $after = Get-HookMemoryPath $repo
+        $got = Invoke-Hook $repo
+        $after = Find-HookMemoryPath $got
         if ($after -ine $script:memRepo) { return "адрес уехал: $after" }
-        return ExpectText $repo 'дочитать формат позиции'
+        return Test-HookText $got 'дочитать формат позиции'
     }
 
     # Защита от совпадения слагов и от файла, положенного руками.
     Check 'файл объявляет чужую копию — содержимое не подано' {
         Set-KitMemory $script:memRepo 'D:\Projects\stranger' 'это работа чужой копии'
-        $problem = ExpectText $repo 'объявляет рабочую копию'
-        if ($problem) { return $problem }
-        $problem = ExpectNoText $repo 'это работа чужой копии'
+        $problem = ExpectText $repo 'объявляет рабочую копию' -Lacks 'это работа чужой копии'
         Set-KitMemory $script:memRepo $repo 'дочитать формат позиции'
         return $problem
     }
@@ -501,9 +506,7 @@ try {
 
     Check 'сценария памяти нет, сценария с теми же этапами нет — переименован или удалён' {
         Set-Content -LiteralPath $renFlow -Encoding utf8 -Value (@('# Сценарии', '') + $renDocs)
-        $problem = ExpectText $renRepo 'переименован — поправить строку «сценарий:» на новое имя'
-        if (-not $problem) { $problem = ExpectNoText $renRepo 'переименован в «' }
-        return $problem
+        return ExpectText $renRepo 'переименован — поправить строку «сценарий:» на новое имя' -Lacks 'переименован в «'
     }
 
     Check 'коммит памяти: сценарий переименован, строка поправлена, этапы те же — гейт пускает' {
@@ -540,23 +543,17 @@ try {
 
     Check 'память без «### Сценарий», этапы под «Фактами» — красная находка называет, где они' {
         Set-Content -LiteralPath $renMem -Encoding utf8 -Value $renNoFlow
-        $problem = ExpectText $renRepo 'нет подраздела «### Сценарий» в «Агенту» — строки этапов стоят в «### Факты»'
-        if (-not $problem) { $problem = ExpectNoText $renRepo 'разошлось со списком сценария' }
-        return $problem
+        return ExpectText $renRepo 'нет подраздела «### Сценарий» в «Агенту» — строки этапов стоят в «### Факты»' -Lacks 'разошлось со списком сценария'
     }
 
     Check 'в «Сценарии» памяти ни одного этапа — красная находка' {
         Set-Content -LiteralPath $renMem -Encoding utf8 -Value ($renHead + @('### Сценарий', '') + $renSteps)
-        $problem = ExpectText $renRepo 'нет ни одного этапа'
-        if (-not $problem) { $problem = ExpectNoText $renRepo 'разошлось со списком сценария' }
-        return $problem
+        return ExpectText $renRepo 'нет ни одного этапа' -Lacks 'разошлось со списком сценария'
     }
 
     Check 'память без «### Шаги» — одна красная находка, о подразделе' {
         Set-Content -LiteralPath $renMem -Encoding utf8 -Value ($renHead + @('### Сценарий') + $renStageLines)
-        $problem = ExpectText $renRepo 'нет подраздела «### Шаги»'
-        if (-not $problem) { $problem = ExpectNoText $renRepo '«Шаги» пусты' }
-        return $problem
+        return ExpectText $renRepo 'нет подраздела «### Шаги»' -Lacks '«Шаги» пусты'
     }
 
     # Пропажа и возврат раздела этапов меняют отметки, но переходом не считаются.
@@ -624,25 +621,25 @@ try {
     }
 
     & git -C $repo worktree add -q $wt -b wt 2>$null
-    Check 'worktree — работает как основная копия' { ExpectText $wt $repo }
+    $wtFresh = Invoke-Hook $wt
+    Check 'worktree — работает как основная копия' { Test-HookText $wtFresh $repo }
 
     # У worktree база та же, а память своя.
     Check 'worktree — память своя, а не основной копии' {
-        $script:memWt = Get-HookMemoryPath $wt
+        $script:memWt = Find-HookMemoryPath $wtFresh
         if (-not $script:memWt) { return 'хук не назвал адрес памяти' }
         if ($script:memWt -ieq $script:memRepo) { return 'адрес тот же, что у основной копии' }
         Set-KitMemory $script:memWt $wt 'работа отдельного worktree'
-        $problem = ExpectText $wt 'работа отдельного worktree'
-        if ($problem) { return $problem }
-        return ExpectNoText $wt 'дочитать формат позиции'
+        return ExpectText $wt 'работа отдельного worktree' -Lacks 'дочитать формат позиции'
     }
 
     # Без ветки рабочее дерево на месте, значит и память на месте.
     Check 'отсоединённый HEAD — адрес прежний, память на месте' {
         & git -C $wt checkout -q --detach
-        $after = Get-HookMemoryPath $wt
+        $got = Invoke-Hook $wt
+        $after = Find-HookMemoryPath $got
         if ($after -ine $script:memWt) { return "адрес уехал: $after" }
-        return ExpectText $wt 'работа отдельного worktree'
+        return Test-HookText $got 'работа отдельного worktree'
     }
 
     # Удаление копии проверяется отказами: каталог уходит с диска насовсем, и безвозвратно с ним
@@ -772,9 +769,7 @@ try {
     Check 'два каталога одного репозитория — каждый со своей базой' {
         $problem = ExpectText $modFoo $baseFoo
         if ($problem) { return $problem }
-        $problem = ExpectText $modBar $baseBar
-        if ($problem) { return $problem }
-        return ExpectNoText $modBar $baseFoo
+        return ExpectText $modBar $baseBar -Lacks $baseFoo
     }
 
     & pwsh -NoProfile -File $link -Path $modSrc -Base $baseBar -Scope Directory | Out-Null
@@ -789,24 +784,20 @@ try {
     Check 'каталог связан в другом регистре — база находится' { ExpectText $modCase $baseBar }
 
     & git -C $mono worktree add -q $monoWt -b monowt 2>$null
+    $wtFoo = Join-Path $monoWt 'packages\foo'
+    $wtFooGot = Invoke-Hook $wtFoo
     Check 'связанный каталог в worktree — база та же, память своя' {
-        $wtFoo = Join-Path $monoWt 'packages\foo'
-        $problem = ExpectText $wtFoo $baseFoo
+        $problem = Test-HookText $wtFooGot $baseFoo
         if ($problem) { return $problem }
         $memMain = Get-HookMemoryPath $modFoo
-        $memWt = Get-HookMemoryPath $wtFoo
+        $memWt = Find-HookMemoryPath $wtFooGot
         if (-not $memWt) { return 'хук не назвал адрес памяти' }
         if ($memWt -ieq $memMain) { return 'адрес тот же, что у основной копии' }
         return $null
     }
 
     Check 'связанный каталог в worktree — рабочая копия названа путём worktree, основная отдельно' {
-        $wtFoo = Join-Path $monoWt 'packages\foo'
-        $problem = ExpectText $wtFoo "- Рабочая копия: ``$wtFoo``"
-        if ($problem) { return $problem }
-        $problem = ExpectText $wtFoo "- Основная копия: ``$modFoo``"
-        if ($problem) { return $problem }
-        return ExpectText $wtFoo "рабочая копия: $wtFoo``"
+        Test-HookText $wtFooGot "- Рабочая копия: ``$wtFoo``", "- Основная копия: ``$modFoo``", "рабочая копия: $wtFoo``"
     }
 
     Check 'отчёт link.ps1 в корне монорепы — называет связанные каталоги' {

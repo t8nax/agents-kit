@@ -17,17 +17,24 @@ function ConvertTo-KitPath([string]$Path) {
     return $full.Replace('/', '\').TrimEnd('\')
 }
 
-# Корень репозитория: worktree приводится к репозиторию, от которого заведён.
+# Корень дерева этой сессии и корень репозитория — одним вызовом git: вызовы git и есть
+# основное время хука на старте каждой сессии. Worktree приводится к репозиторию, от которого заведён.
+function Get-KitGitRoots([string]$Dir) {
+    $out = & git -C $Dir rev-parse --show-toplevel --path-format=absolute --git-common-dir 2>$null
+    if ($LASTEXITCODE -ne 0) { return $null }
+    $lines = @($out | Where-Object { $_ } | ForEach-Object { $_.ToString().Trim() })
+    if ($lines.Count -lt 2) { return $null }
+    $tree = ConvertTo-KitPath $lines[0]
+    $repo = $tree
+    $common = ConvertTo-KitPath $lines[1]
+    if ($common -match '\\.git$') { $repo = ConvertTo-KitPath (Split-Path $common -Parent) }
+    return [pscustomobject]@{ tree = $tree; repo = $repo }
+}
+
 function Get-KitRepoRoot([string]$Dir) {
-    $top = Invoke-KitGit $Dir @('rev-parse', '--show-toplevel')
-    if (-not $top) { return $null }
-    $repo = ConvertTo-KitPath $top
-    $common = Invoke-KitGit $Dir @('rev-parse', '--path-format=absolute', '--git-common-dir')
-    if ($common) {
-        $commonN = ConvertTo-KitPath $common
-        if ($commonN -match '\\.git$') { $repo = ConvertTo-KitPath (Split-Path $commonN -Parent) }
-    }
-    return $repo
+    $roots = Get-KitGitRoots $Dir
+    if (-not $roots) { return $null }
+    return $roots.repo
 }
 
 # Корень дерева этой сессии: worktree остаётся собой.
@@ -60,11 +67,11 @@ function Get-KitPointerKey([string]$Scope) {
     return "agents-kit.$Scope.base"
 }
 
-# Все связанные подкаталоги репозитория: отрезок → путь базы. Одним вызовом, а не по
-# вызову git на сегмент пути; корневой ключ сюда не попадает — у него нет подсекции.
-function Get-KitScopedPointers([string]$Dir) {
+# Все указатели репозитория: отрезок → путь базы, у корневого ключа отрезок пустой. Одним
+# вызовом, а не по вызову git на сегмент пути; из повторов ключа действует последний.
+function Get-KitPointers([string]$Dir) {
     $map = [ordered]@{}
-    $raw = & git -C $Dir config --local --get-regexp --null '^agents-kit\..+\.base$' 2>$null
+    $raw = & git -C $Dir config --local --get-regexp --null '^agents-kit\.(.+\.)?base$' 2>$null
     if ($LASTEXITCODE -ne 0 -or -not $raw) { return $map }
     foreach ($record in (($raw -join "`n") -split [char]0)) {
         if (-not $record) { continue }
@@ -73,32 +80,34 @@ function Get-KitScopedPointers([string]$Dir) {
         $key = $record.Substring(0, $break)
         $value = $record.Substring($break + 1).Trim()
         if (-not $value) { continue }
-        if ($key -notmatch '^agents-kit\.(.+)\.base$') { continue }
-        $map[$Matches[1].ToLowerInvariant()] = ConvertTo-KitPath $value
+        if ($key -notmatch '^agents-kit\.(?:(.+)\.)?base$') { continue }
+        $map[([string]$Matches[1]).ToLowerInvariant()] = ConvertTo-KitPath $value
     }
+    return $map
+}
+
+# Связанные подкаталоги репозитория — указатели без корневого ключа.
+function Get-KitScopedPointers([string]$Dir) {
+    $map = Get-KitPointers $Dir
+    if ($map.Contains('')) { $map.Remove('') }
     return $map
 }
 
 # Указатель этого каталога — ближайший связанный предок внутри дерева, а нет такого,
 # то корневой ключ репозитория. Вне связанного каталога сессия не получает ничего, как без указателя.
 function Resolve-KitPointer([string]$Dir, [string]$Scope) {
-    if ($Scope) {
-        $scoped = Get-KitScopedPointers $Dir
-        if ($scoped.Count) {
-            $candidate = $Scope
-            while ($candidate) {
-                if ($scoped.Contains($candidate)) {
-                    return [pscustomobject]@{ scope = $candidate; base = $scoped[$candidate] }
-                }
-                $cut = $candidate.LastIndexOf('/')
-                if ($cut -lt 0) { break }
-                $candidate = $candidate.Substring(0, $cut)
-            }
+    $pointers = Get-KitPointers $Dir
+    $candidate = $Scope
+    while ($candidate) {
+        if ($pointers.Contains($candidate)) {
+            return [pscustomobject]@{ scope = $candidate; base = $pointers[$candidate] }
         }
+        $cut = $candidate.LastIndexOf('/')
+        if ($cut -lt 0) { break }
+        $candidate = $candidate.Substring(0, $cut)
     }
-    $base = Invoke-KitGit $Dir @('config', '--local', '--get', 'agents-kit.base')
-    if (-not $base) { return $null }
-    return [pscustomobject]@{ scope = ''; base = (ConvertTo-KitPath $base) }
+    if (-not $pointers.Contains('')) { return $null }
+    return [pscustomobject]@{ scope = ''; base = $pointers[''] }
 }
 
 # Оба ключа пути разом. Свести их нельзя: worktree потерял бы память или каждый worktree
@@ -108,9 +117,10 @@ function Resolve-KitPointer([string]$Dir, [string]$Scope) {
 # Ключ — абсолютный путь, не git remote: у каталога, скопированного с .git, тот же origin,
 # и remote пропустил бы ровно тот случай, ради которого проверка заведена.
 function Get-KitRoots([string]$Dir) {
-    $tree = Get-KitTreeRoot $Dir
-    if (-not $tree) { return $null }
-    $repo = Get-KitRepoRoot $Dir
+    $git = Get-KitGitRoots $Dir
+    if (-not $git) { return $null }
+    $tree = $git.tree
+    $repo = $git.repo
     $pointer = Resolve-KitPointer $Dir (Get-KitScopeSegment $tree $Dir)
     $scope = ''
     if ($pointer) { $scope = $pointer.scope }

@@ -42,16 +42,10 @@ if ($here -ieq $tree -or $here.StartsWith($tree + '\', [StringComparison]::Ordin
 
 # Память ищется у каждого связанного каталога дерева, а не у одного названного: под кит взято
 # может быть несколько каталогов монорепы с разными базами, и удаление унесло бы чужую задачу.
-$linked = @()
-$rootBase = Invoke-KitGit $tree @('config', '--local', '--get', 'agents-kit.base')
-if ($rootBase) { $linked += [pscustomobject]@{ scope = ''; base = (ConvertTo-KitPath $rootBase) } }
-$scoped = Get-KitScopedPointers $tree
-foreach ($scope in $scoped.Keys) {
-    $linked += [pscustomobject]@{ scope = $scope; base = $scoped[$scope] }
-}
-foreach ($pointer in $linked) {
-    $copy = Join-KitScope $tree $pointer.scope
-    $memory = Get-KitWorkMemoryPath $pointer.base $copy
+$pointers = Get-KitPointers $tree
+foreach ($scope in $pointers.Keys) {
+    $copy = Join-KitScope $tree $scope
+    $memory = Get-KitWorkMemoryPath $pointers[$scope] $copy
     if ($memory -and (Test-Path -LiteralPath $memory -PathType Leaf)) {
         throw "в копии «$copy» задача в работе: память «$memory» — сначала закрыть задачу"
     }
