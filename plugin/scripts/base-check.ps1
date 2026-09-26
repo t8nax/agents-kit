@@ -1082,7 +1082,7 @@ function ConvertTo-KitTitleKey([string]$Name) {
 
 # Сценарии из scenarios.md: раздел «##» — сценарий, строка «когда:» до его списка, пункты
 # нумерованного списка — ссылки на файлы этапов, строки «- возврат:» с отступом под пунктом —
-# его возвраты. Любая другая непустая строка под пунктом уходит в strays сценария: возврат
+# его возвраты, строки «- кругов:» — его пределы кругов. Любая другая непустая строка под пунктом уходит в strays сценария: возврат
 # с опечаткой, без дефиса или без отступа иначе пропал бы молча. Разбор без находок: его берут
 # и сверка флоу, и сверка памяти задачи, которая сводит свою строку «сценарий:» со списком.
 function Get-KitFlowList([string]$Base) {
@@ -1111,7 +1111,9 @@ function Get-KitFlowList([string]$Base) {
             if (-not $current.items.Count -or -not $line.Trim()) { continue }
             $owner = $current.items[$current.items.Count - 1]
             $return = [regex]::Match($line, '^\s+-\s+возврат\s*:\s*(.*?)\s*$')
+            $limit = [regex]::Match($line, '^\s+-\s+кругов\s*:\s*(.*?)\s*$')
             if ($return.Success) { $owner.returns.Add($return.Groups[1].Value) }
+            elseif ($limit.Success) { $owner.limits.Add($limit.Groups[1].Value) }
             else { $current.strays.Add([pscustomobject]@{ number = $owner.number; text = $line.Trim() }) }
             continue
         }
@@ -1122,6 +1124,7 @@ function Get-KitFlowList([string]$Base) {
             title = $(if ($link.Success) { $link.Groups[1].Value } else { $null })
             file = $(if ($link.Success) { $link.Groups[2].Value } else { $null })
             returns = [System.Collections.Generic.List[string]]::new()
+            limits = [System.Collections.Generic.List[string]]::new()
         })
     }
     return $flows
@@ -1166,7 +1169,8 @@ function Read-KitStage([string]$Path, [string]$File) {
 # в файл этапа или называет его не его заголовком, этап дважды в одном сценарии, ссылка
 # номером или на название, которого нет, два этапа с одним названием, строка под пунктом
 # сценария, которая не возврат, возврат без условия, без названия в кавычках, на этап, которого
-# нет, и возврат, который в своём сценарии ведёт мимо или не назад. Длину сценария сверка
+# нет, возврат, который в своём сценарии ведёт мимо или не назад, и предел кругов не целым от 1,
+# второй под пунктом или под пунктом без возврата. Длину сценария сверка
 # не проверяет; отсутствие scenarios.md назвала сверка каркаса.
 function Get-KitFlowFindings([string]$Base, [string]$Worktree, $Rules) {
     if (-not (Test-Path -LiteralPath (Join-Path $Base $script:KitScenariosFile) -PathType Leaf)) { return }
@@ -1243,7 +1247,15 @@ function Get-KitFlowFindings([string]$Base, [string]$Worktree, $Rules) {
         $orders += [pscustomobject]@{ name = $flow.name; order = $order }
 
         foreach ($stray in $flow.strays) {
-            New-KitFinding 'FAIL' $script:KitScenariosFile "${at}: пункт $($stray.number) — строка «$($stray.text)» не возврат; под пунктом этапа стоят только строки «- возврат:»"
+            New-KitFinding 'FAIL' $script:KitScenariosFile "${at}: пункт $($stray.number) — строка «$($stray.text)» не возврат и не предел кругов; под пунктом этапа стоят только строки «- возврат:» и «- кругов:»"
+        }
+        foreach ($i in $flow.items) {
+            $head = "${at}: пункт $($i.number)"
+            if ($i.limits.Count -gt 1) { New-KitFinding 'FAIL' $script:KitScenariosFile "${head}: строк «- кругов:» $($i.limits.Count) — предел у пункта один" }
+            if ($i.limits.Count -and -not $i.returns.Count) { New-KitFinding 'FAIL' $script:KitScenariosFile "${head}: предел кругов без возврата — ограничивать нечего" }
+            foreach ($limit in $i.limits) {
+                if ($limit -notmatch '^[1-9]\d*$') { New-KitFinding 'FAIL' $script:KitScenariosFile "${head}: предел кругов «$limit» — нужно целое от 1" }
+            }
         }
         # Направление — по месту в этом сценарии: список собран целиком, и цель, стоящая ниже
         # пункта, уже в $order.
@@ -1264,8 +1276,7 @@ function Get-KitFlowFindings([string]$Base, [string]$Worktree, $Rules) {
                 $targetName = $target.Groups[1].Value
                 if (-not $return.Substring(0, $target.Index).Trim([char[]]' —-:,')) {
                     New-KitFinding 'FAIL' $script:KitScenariosFile "${head}: возврат к этапу «$targetName» без условия"
-                }
-                $targetStage = $names[(ConvertTo-KitTitleKey $targetName)]
+                }                $targetStage = $names[(ConvertTo-KitTitleKey $targetName)]
                 if (-not $targetStage) {
                     New-KitFinding 'FAIL' $script:KitScenariosFile "${head}: возврат к этапу «$targetName» — такого этапа нет"
                     continue
