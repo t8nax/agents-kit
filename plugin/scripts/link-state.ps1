@@ -142,14 +142,38 @@ function Get-KitMemoryRoot([string]$Dir) {
     return $roots.worktree
 }
 
-# Адрес памяти — слаг полного пути: одноимённые каталоги в разных родителях не делят
-# файл; нижний регистр — NTFS его не различает. Неоднозначность слага («a\b» и «a-b»)
-# ловит строка «рабочая копия» внутри файла.
-function Get-KitWorkMemoryPath([string]$BaseDir, [string]$Worktree) {
-    if (-not $BaseDir -or -not $Worktree) { return $null }
-    $slug = ([regex]::Replace($Worktree.ToLowerInvariant(), '[^\p{L}\p{Nd}]+', '-')).Trim('-')
+function ConvertTo-KitSlug([string]$Text) {
+    if (-not $Text) { return $null }
+    $slug = ([regex]::Replace($Text.ToLowerInvariant(), '[^\p{L}\p{Nd}]+', '-')).Trim('-')
     if (-not $slug) { return $null }
-    return ConvertTo-KitPath (Join-Path $BaseDir ('work\' + $slug + '.md'))
+    return $slug
+}
+
+# Имя машины — считается при каждом запуске и нигде не хранится: файл кита с ним уехал бы
+# к следующему, кто поставит кит, а файл базы — на соседнюю машину. COMPUTERNAME берётся первым:
+# его наследует дочерний процесс, и стенд им подменяет машину.
+function Get-KitMachine {
+    $name = $env:COMPUTERNAME
+    if (-not $name) { try { $name = [Environment]::MachineName } catch { $name = $null } }
+    return ConvertTo-KitSlug $name
+}
+
+# Каталог памяти этой машины. Машина — каталогом, а не частью имени файла: имя машины
+# с дефисом неотличимо от начала слага пути, а каталог отделяет свою память от чужой целиком.
+function Get-KitMemoryDir([string]$BaseDir) {
+    $machine = Get-KitMachine
+    if (-not $BaseDir -or -not $machine) { return $null }
+    return ConvertTo-KitPath (Join-Path $BaseDir ('work\' + $machine))
+}
+
+# Адрес памяти — каталог машины и слаг полного пути: одинаковые пути на двух машинах не делят
+# файл, одноимённые каталоги в разных родителях тоже; нижний регистр — NTFS его не различает.
+# Неоднозначность слага («a\b» и «a-b») ловит строка «рабочая копия» внутри файла.
+function Get-KitWorkMemoryPath([string]$BaseDir, [string]$Worktree) {
+    $dir = Get-KitMemoryDir $BaseDir
+    $slug = ConvertTo-KitSlug $Worktree
+    if (-not $dir -or -not $slug) { return $null }
+    return ConvertTo-KitPath (Join-Path $dir ($slug + '.md'))
 }
 
 # Субагент базы, разложенный в рабочую копию: где лежит, чем спрятан от git проекта и что
@@ -261,8 +285,8 @@ function Get-KitFormat {
     return $steps[-1].number
 }
 
-# Список копий базы. Возвращает объект или $null, если файла нет либо он
-# не разбирается: список копий отличает базу кита от произвольного каталога, на который
+# agents-kit.json базы. Возвращает объект или $null, если файла нет либо он
+# не разбирается: этот файл отличает базу кита от произвольного каталога, на который
 # указатель попал по опечатке. Формат базы — целое «version» от 1: без него переводить
 # не с чего, и база не опознаётся.
 function Get-KitMarker([string]$BaseDir) {
@@ -275,23 +299,44 @@ function Get-KitMarker([string]$BaseDir) {
     return $marker
 }
 
-function Test-KitWorkspaceKnown($Marker, [string]$Workspace) {
-    if (-not $Marker -or -not $Marker.workspaces) { return $false }
-    $known = @($Marker.workspaces | ForEach-Object { ConvertTo-KitPath $_ })
-    return [bool]($known | Where-Object { $_ -ieq $Workspace })
+# Список копий — в local\ базы, вне git: пути копий у каждой машины свои, и общий файл
+# давал бы каждой машине висящие записи соседней.
+function Get-KitWorkspacesPath([string]$BaseDir) {
+    return (Join-Path $BaseDir 'local\workspaces.json')
+}
+
+# Список копий этой машины — объект с полем workspaces. Файла нет — пустой список; файл
+# не разбирается — $null: «копий нет» от «файл испорчен» отличает тот, кто его перепишет.
+function Get-KitWorkspaceList([string]$BaseDir) {
+    $path = Get-KitWorkspacesPath $BaseDir
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return [pscustomobject]@{ workspaces = @() } }
+    try { $list = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json } catch { return $null }
+    if ($list -isnot [pscustomobject]) { return $null }
+    return $list
+}
+
+function Get-KitWorkspaces([string]$BaseDir) {
+    $list = Get-KitWorkspaceList $BaseDir
+    if (-not $list -or -not $list.workspaces) { return @() }
+    return @($list.workspaces | Where-Object { $_ } | ForEach-Object { ConvertTo-KitPath $_ })
+}
+
+function Test-KitWorkspaceKnown([string]$BaseDir, [string]$Workspace) {
+    return [bool](@(Get-KitWorkspaces $BaseDir) | Where-Object { $_ -ieq $Workspace })
 }
 
 # Единственная цепочка состояний связи. Порядок важен: каждое следующее условие
 # имеет смысл, только когда предыдущее пройдено, — по несуществующему пути нечего
-# читать, а в каталоге без списка копий нечего проверять.
+# читать, а в каталоге без формата нечего проверять. Формат — до списка копий: где лежит
+# список, решает формат, и базу прежнего формата кит иначе не смог бы даже перевести.
 #
 #   NotGit      каталог вне git-репозитория
 #   NoPointer   ни каталог, ни репозиторий базы не объявили — под китом не числится
 #   BaseMissing указатель есть, каталога базы нет
-#   NotBase     каталог есть, но списка копий нет, он не читается или в нём нет формата
-#   Unlisted    база есть, но эту копию не числит своей
-#   Outdated    связь сошлась, а формат базы старше того, что ждёт кит, — перевести
-#   Newer       связь сошлась, а базу перевёл кит новее этого — обновить кит
+#   NotBase     каталог есть, но agents-kit.json нет, он не читается или в нём нет формата
+#   Outdated    формат базы старше того, что ждёт кит, — перевести
+#   Newer       базу перевёл кит новее этого — обновить кит
+#   Unlisted    база есть, но на этой машине эту копию не числит своей
 #   Linked      обе стороны сошлись, формат тот, что ждёт кит
 function Get-KitLinkState([string]$Dir) {
     $state = [ordered]@{
@@ -318,14 +363,14 @@ function Get-KitLinkState([string]$Dir) {
     $marker = Get-KitMarker $state.base
     if (-not $marker) { return [pscustomobject]$state }
     $state.marker = $marker
-    $state.status = 'Unlisted'
-
-    if (-not (Test-KitWorkspaceKnown $marker $state.workspace)) { return [pscustomobject]$state }
     $state.format = [int]$marker.version
     $state.kitFormat = Get-KitFormat
-    if ($state.format -lt $state.kitFormat) { $state.status = 'Outdated' }
-    elseif ($state.format -gt $state.kitFormat) { $state.status = 'Newer' }
-    else { $state.status = 'Linked' }
+    if ($state.format -lt $state.kitFormat) { $state.status = 'Outdated'; return [pscustomobject]$state }
+    if ($state.format -gt $state.kitFormat) { $state.status = 'Newer'; return [pscustomobject]$state }
+    $state.status = 'Unlisted'
+
+    if (-not (Test-KitWorkspaceKnown $state.base $state.workspace)) { return [pscustomobject]$state }
+    $state.status = 'Linked'
     return [pscustomobject]$state
 }
 

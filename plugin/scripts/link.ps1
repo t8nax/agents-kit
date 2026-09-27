@@ -44,11 +44,11 @@ if (-not $Base) {
             exit 1
         }
         'NotBase' {
-            Write-Host "База:          списка копий нет, он не читается или в нём нет формата базы — это не база кита" -ForegroundColor Red
+            Write-Host "База:          agents-kit.json нет, он не читается или в нём нет формата базы — это не база кита" -ForegroundColor Red
             exit 1
         }
         'Unlisted' {
-            Write-Host "База:          есть, но эту копию не числит — связь односторонняя" -ForegroundColor Red
+            Write-Host "База:          есть, но на этой машине эту копию не числит — связь односторонняя" -ForegroundColor Red
             $scopeArg = ''
             if ($state.scope) { $scopeArg = ' -Scope Directory' }
             Write-Host "               связать: link.ps1$scopeArg -Base `"$($state.base)`""
@@ -84,31 +84,41 @@ $pointerKey = Get-KitPointerKey $segment
 # своим один путь.
 $workspace = Join-KitScope (Get-KitRepoRoot $Path) $segment
 
-# Список копий заводится, только когда его нет вовсе. Нечитаемый или чужой
-# файл не перетирается: копии, которые в нём числятся, дороже удобства.
+# agents-kit.json и список копий заводятся, только когда их нет вовсе. Нечитаемый или чужой
+# файл не перетирается: то, что в нём записано, дороже удобства.
 $markerPath = Get-KitMarkerPath $baseN
 $marker = Get-KitMarker $baseN
 if (-not $marker) {
     if (Test-Path -LiteralPath $markerPath -PathType Leaf) {
-        throw "«$markerPath» существует, но не разбирается как список копий базы — разобраться должен оператор"
+        throw "«$markerPath» существует, но не разбирается как agents-kit.json базы — разобраться должен оператор"
     }
-    $marker = [pscustomobject][ordered]@{ kit = 'agents-kit'; version = (Get-KitFormat); workspaces = @() }
-    Write-Host "Заведён список копий базы: $markerPath"
+    $marker = [pscustomobject][ordered]@{ kit = 'agents-kit'; version = (Get-KitFormat) }
+    if ($PSCmdlet.ShouldProcess($markerPath, 'завести agents-kit.json')) {
+        $marker | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $markerPath -Encoding utf8
+    }
+    Write-Host "Заведён agents-kit.json базы: $markerPath"
+}
+elseif ([int]$marker.version -gt (Get-KitFormat)) {
+    # Где лежит список копий у базы новее кита, этот кит не знает.
+    throw "базу «$baseN» перевёл на формат $($marker.version) кит новее этого, а этот знает формат до $(Get-KitFormat) — обновить кит"
 }
 
-$known = @()
-if ($marker.workspaces) { $known = @($marker.workspaces | ForEach-Object { ConvertTo-KitPath $_ }) }
+$listPath = Get-KitWorkspacesPath $baseN
+$list = Get-KitWorkspaceList $baseN
+if (-not $list) { throw "«$listPath» существует, но не разбирается как список копий — разобраться должен оператор" }
+$known = @(Get-KitWorkspaces $baseN)
 if ($known | Where-Object { $_ -ieq $workspace }) {
-    Write-Host "База уже числит эту копию: $workspace"
+    Write-Host "База уже числит эту копию на этой машине: $workspace"
 }
 else {
     # Пишется прочитанный файл с заменённым списком, а не собранный заново: поле,
     # заведённое будущей версией, переживает добавление копии, а не исчезает молча.
-    $marker | Add-Member -NotePropertyName 'workspaces' -NotePropertyValue @($known + $workspace) -Force
-    if ($PSCmdlet.ShouldProcess($markerPath, 'записать список копий')) {
-        $marker | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $markerPath -Encoding utf8
+    $list | Add-Member -NotePropertyName 'workspaces' -NotePropertyValue @($known + $workspace) -Force
+    if ($PSCmdlet.ShouldProcess($listPath, 'записать список копий')) {
+        New-Item -ItemType Directory -Force -Path (Split-Path $listPath -Parent) | Out-Null
+        $list | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $listPath -Encoding utf8
     }
-    Write-Host "База теперь числит копию: $workspace"
+    Write-Host "База теперь числит копию на этой машине: $workspace"
 }
 
 # Указатель ставится последним: упади запись в базу, связь осталась бы односторонней
@@ -119,7 +129,7 @@ if ($PSCmdlet.ShouldProcess($workspace, "указатель $pointerKey → $bas
 }
 Write-Host "Указатель поставлен: $workspace → $baseN (ключ $pointerKey)"
 if ($state.base -and $state.base -ine $baseN) {
-    Write-Host "Прежний указатель вёл в $($state.base) — если та база больше не нужна, её запись об этой копии стоит убрать руками." -ForegroundColor Yellow
+    Write-Host "Прежний указатель вёл в $($state.base) — если та база больше не нужна, её запись об этой копии в local\workspaces.json стоит убрать руками." -ForegroundColor Yellow
 }
 # Субагенты базы довозятся сразу за связью: у второй копии проекта они уже есть в базе,
 # и без раскладки этап звал бы в ней исполнителя, которого в копии нет. Не вышло — связь

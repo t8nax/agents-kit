@@ -233,27 +233,32 @@ function Find-KitSecrets([string]$Path, [string]$Label) {
 }
 
 # Сторона базы у связи. Хук проверяет связь от копии; висящую запись в списке оттуда
-# не видно — копии, от которой смотреть, больше нет.
+# не видно — копии, от которой смотреть, больше нет. Список — этой машины: копии соседних
+# машин живут в их local\ и отсюда не видны.
 function Get-KitLinkFindings([string]$Base) {
-    $marker = Get-KitMarker $Base
-    if (-not $marker) {
-        New-KitFinding 'FAIL' 'agents-kit.json' 'списка копий нет, он не читается или в нём нет формата базы — это не база кита'
+    if (-not (Get-KitMarker $Base)) {
+        New-KitFinding 'FAIL' 'agents-kit.json' 'agents-kit.json нет, он не читается или в нём нет формата базы — это не база кита'
         return
     }
-    $list = @($marker.workspaces | Where-Object { $_ } | ForEach-Object { ConvertTo-KitPath $_ })
+    $label = 'local\workspaces.json'
+    if (-not (Get-KitWorkspaceList $Base)) {
+        New-KitFinding 'FAIL' $label 'список копий не разбирается — разобраться должен оператор'
+        return
+    }
+    $list = @(Get-KitWorkspaces $Base)
     if (-not $list.Count) {
-        New-KitFinding 'FAIL' 'agents-kit.json' 'база не числит ни одной основной копии — связывает link.ps1'
+        New-KitFinding 'FAIL' $label 'на этой машине база не числит ни одной основной копии — связывает link.ps1'
         return
     }
 
     $seen = @{}
     foreach ($ws in $list) {
         $key = $ws.ToLowerInvariant()
-        if ($seen.ContainsKey($key)) { New-KitFinding 'FAIL' 'agents-kit.json' "копия «$ws» числится дважды"; continue }
+        if ($seen.ContainsKey($key)) { New-KitFinding 'FAIL' $label "копия «$ws» числится дважды"; continue }
         $seen[$key] = $true
 
         if (-not (Test-Path -LiteralPath $ws -PathType Container)) {
-            New-KitFinding 'FAIL' 'agents-kit.json' "копии «$ws» нет на диске — запись висит: вернуть копию или убрать запись"
+            New-KitFinding 'FAIL' $label "копии «$ws» нет на диске — запись висит: вернуть копию или убрать запись"
             continue
         }
         if ($Base -ieq $ws -or $Base.StartsWith($ws + '\', [StringComparison]::OrdinalIgnoreCase)) {
@@ -262,16 +267,16 @@ function Get-KitLinkFindings([string]$Base) {
 
         $state = Get-KitLinkState $ws
         if ($state.status -eq 'NotGit') {
-            New-KitFinding 'FAIL' 'agents-kit.json' "«$ws» не git-репозиторий — запись висит"
+            New-KitFinding 'FAIL' $label "«$ws» не git-репозиторий — запись висит"
         }
         elseif ($state.workspace -ine $ws) {
-            New-KitFinding 'FAIL' 'agents-kit.json' "«$ws» — не основная копия, а часть «$($state.workspace)»: в список идёт каталог, для которого записан указатель, и worktree в него не пишется"
+            New-KitFinding 'FAIL' $label "«$ws» — не основная копия, а часть «$($state.workspace)»: в список идёт каталог, для которого записан указатель, и worktree в него не пишется"
         }
         elseif ($state.status -eq 'NoPointer') {
-            New-KitFinding 'FAIL' 'agents-kit.json' "у копии «$ws» указатель снят — запись висит: связать заново link.ps1 или убрать запись"
+            New-KitFinding 'FAIL' $label "у копии «$ws» указатель снят — запись висит: связать заново link.ps1 или убрать запись"
         }
         elseif ($state.base -ine $Base) {
-            New-KitFinding 'FAIL' 'agents-kit.json' "копия «$ws» указывает на другую базу «$($state.base)» — запись висит"
+            New-KitFinding 'FAIL' $label "копия «$ws» указывает на другую базу «$($state.base)» — запись висит"
         }
     }
 }
@@ -293,7 +298,7 @@ function Get-KitGitFindings([string]$Base) {
     }
     $tracked = @(& git -C $Base ls-files -- 'local' 2>$null | Where-Object { $_ })
     if ($tracked.Count) {
-        New-KitFinding 'FAIL' $tracked[0] "файлов из local/ под версией: $($tracked.Count) — секрет уже в истории: ротировать утёкшее"
+        New-KitFinding 'FAIL' $tracked[0] "файлов из local/ под версией: $($tracked.Count) — если среди них креды, секрет уже в истории: ротировать утёкшее"
     }
 }
 
@@ -981,14 +986,23 @@ function Get-KitStepFindings([string]$Base, [string]$Path, [string]$Label) {
     New-KitFinding 'FAIL' $Label "в «Шагах» осталось строк прежнего этапа: $($left.Count), первая — «$(Get-KitStepQuote $left[0].text)» — отметки «Сценария» сменились, а шаги покинутого этапа уходят тем же обновлением"
 }
 
+# Судится память только этой машины: каталог соседней держит её работу, и жива ли та машина,
+# отсюда не видно. Файл прямо в work/ не принадлежит ни одной машине и не подаст его никто.
 function Get-KitWorkFindings([string]$Base, [string]$Worktree, $Ceilings) {
     $work = Join-Path $Base 'work'
     if (-not (Test-Path -LiteralPath $work -PathType Container)) { return }
+    $mine = Get-KitMemoryDir $Base
     $own = Get-KitWorkMemoryPath $Base $Worktree
 
-    foreach ($item in @(Get-ChildItem -LiteralPath $work -Force -ErrorAction SilentlyContinue)) {
+    foreach ($item in @(Get-ChildItem -LiteralPath $work -Force -File -ErrorAction SilentlyContinue)) {
         $label = Get-KitRelativePath $Base (ConvertTo-KitPath $item.FullName)
-        if ($item.PSIsContainer) { New-KitFinding 'WARN' $label 'подкаталог в work/ — память лежит плоско, файлом на рабочее дерево'; continue }
+        New-KitFinding 'FAIL' $label 'лежит в work/ вне каталога машины — память лежит в work/<машина>/: не своя, решает оператор'
+    }
+    if (-not $mine -or -not (Test-Path -LiteralPath $mine -PathType Container)) { return }
+
+    foreach ($item in @(Get-ChildItem -LiteralPath $mine -Force -ErrorAction SilentlyContinue)) {
+        $label = Get-KitRelativePath $Base (ConvertTo-KitPath $item.FullName)
+        if ($item.PSIsContainer) { New-KitFinding 'WARN' $label 'подкаталог в каталоге машины — память лежит плоско, файлом на рабочее дерево'; continue }
         if ($item.Extension -ine '.md') { New-KitFinding 'WARN' $label 'не .md в work/ — work/ держит только память задач'; continue }
 
         $path = ConvertTo-KitPath $item.FullName
@@ -1428,7 +1442,7 @@ function Get-KitCommitFindings([string]$Base, [string]$Worktree, [string[]]$File
         if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { continue }
 
         if ($rel -match '^local\\') {
-            New-KitFinding 'FAIL' $rel 'файл из local/ в коммите — значения кредов в git базы не попадают'
+            New-KitFinding 'FAIL' $rel 'файл из local/ в коммите — значения кредов и список копий машины в git базы не попадают'
             continue
         }
         if ($rel -match "^$($script:KitArtifactsDir)\\([^\\]+)$") {
@@ -1442,7 +1456,7 @@ function Get-KitCommitFindings([string]$Base, [string]$Worktree, [string[]]$File
         elseif ($rel -match "^$($script:KitDecisionsDir)\\[^\\]+\.md$") {
             Get-KitDecisionFileFindings $path $rel $rules
         }
-        elseif ($rel -match '^work\\[^\\]+\.md$') {
+        elseif ($rel -match '^work\\.+\.md$') {
             # Взятая запись ловится со стороны своей памяти: это коммит взятия. Со стороны
             # бэклога её не ищут — вырезать чужую запись коммит бэклога всё равно не может.
             if ($own -and $path -ieq $own) {

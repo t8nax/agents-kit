@@ -245,6 +245,8 @@ $migBase = Join-Path $root 'base-mig'
 $newRepo = Join-Path $root 'mig-new'
 $newBase = Join-Path $root 'base-mig-new'
 $kitCopy = Join-Path $root 'kit-copy'
+$v1Repo  = Join-Path $root 'v1'
+$v1Base  = Join-Path $root 'base-v1'
 
 try {
     New-Item -ItemType Directory -Force -Path $plain, $notbase | Out-Null
@@ -685,12 +687,12 @@ try {
 
     # Поле, которого в схеме нет, переживает добавление копии.
     Check 'добавление копии — прочие поля списка копий целы' {
-        $markerPath = Join-Path $base 'agents-kit.json'
-        $m = Get-Content -LiteralPath $markerPath -Raw | ConvertFrom-Json
+        $listPath = Join-Path $base 'local\workspaces.json'
+        $m = Get-Content -LiteralPath $listPath -Raw | ConvertFrom-Json
         $m | Add-Member -NotePropertyName 'note' -NotePropertyValue 'поле будущей версии' -Force
-        $m | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $markerPath -Encoding utf8
+        $m | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $listPath -Encoding utf8
         & pwsh -NoProfile -File $link -Path $copy -Base $base | Out-Null
-        $after = Get-Content -LiteralPath $markerPath -Raw | ConvertFrom-Json
+        $after = Get-Content -LiteralPath $listPath -Raw | ConvertFrom-Json
         if ($after.note -ne 'поле будущей версии') { return 'поле note потеряно' }
         if (@($after.workspaces).Count -ne 2) { return "копий в списке $(@($after.workspaces).Count), ожидалось 2" }
         return $null
@@ -709,6 +711,41 @@ try {
         $problem = ExpectNoText $repo 'это работа соседней копии'
         if ($problem) { return $problem }
         return ExpectNoText $copy 'дочитать формат позиции'
+    }
+
+    Check 'файл прямо в work/ — сверка называет, содержимое не подано' {
+        $stray = Join-Path $base 'work\stray.md'
+        Set-KitMemory $stray $repo 'память вне каталога машины'
+        $problem = ExpectText $repo 'вне каталога машины' -Lacks 'память вне каталога машины'
+        Remove-Item -LiteralPath $stray -Force
+        return $problem
+    }
+
+    # Вторая машина с тем же путём копии: стенд подменяет имя машины, а её пустой local\ —
+    # отложив в сторону список копий первой.
+    $listPath = Join-Path $base 'local\workspaces.json'
+    $listSaved = Get-Content -LiteralPath $listPath -Raw
+    $firstMachineDir = 'work\' + (Split-Path (Split-Path $script:memRepo -Parent) -Leaf) + '\'
+    $machineSaved = $env:COMPUTERNAME
+    $env:COMPUTERNAME = 'second-machine'
+    Remove-Item -LiteralPath $listPath -Force
+    try {
+        Check 'вторая машина — копию не числит, остановка' { ExpectText $repo 'на этой машине она не числит' }
+        & pwsh -NoProfile -File $link -Path $repo -Base $base | Out-Null
+        $second = Invoke-Hook $repo
+        Check 'вторая машина, тот же путь копии — адрес памяти свой, память первой не подана' {
+            $mem = Find-HookMemoryPath $second
+            if (-not $mem) { return "хук не назвал адрес памяти: $($second.Split("`n")[0])" }
+            if ($mem -ieq $script:memRepo) { return "адрес тот же, что у первой машины: $mem" }
+            return Test-HookText $second -Lacks 'дочитать формат позиции'
+        }
+        Check 'вторая машина — копии и память первой сверка не называет' {
+            Test-HookText $second 'проект под китом' -Lacks $firstMachineDir, $copy
+        }
+    }
+    finally {
+        $env:COMPUTERNAME = $machineSaved
+        Set-Content -LiteralPath $listPath -Value $listSaved -Encoding utf8 -NoNewline
     }
 
     & git -C $repo worktree add -q $wt -b wt 2>$null
@@ -849,7 +886,7 @@ try {
 
     # В списке копий — каталог, для которого записан указатель, а не корень репозитория.
     Check 'связь по каталогу — база числит каталог, а не репозиторий' {
-        $m = Get-Content -LiteralPath (Join-Path $baseFoo 'agents-kit.json') -Raw | ConvertFrom-Json
+        $m = Get-Content -LiteralPath (Join-Path $baseFoo 'local\workspaces.json') -Raw | ConvertFrom-Json
         $ws = @($m.workspaces)
         if ($ws.Count -ne 1) { return "копий в списке $($ws.Count), ожидалась одна" }
         if ($ws[0] -ine $modFoo) { return "числится «$($ws[0])», ожидался «$modFoo»" }
@@ -1043,7 +1080,7 @@ try {
     & git -C $repo config --local agents-kit.base $notbase
     Check 'каталог без agents-kit.json — не база' { ExpectText $repo 'ведёт не в базу' }
 
-    # Формат базы. Своя база и копия: список копий правится проверками и уходит в коммит базы.
+    # Формат базы. Своя база и копия: agents-kit.json правится проверками и уходит в коммит базы.
     New-TestRepo $migRepo
     Invoke-BaseInit $migBase | Out-Null
     & pwsh -NoProfile -File $link -Path $migRepo -Base $migBase | Out-Null
@@ -1054,7 +1091,7 @@ try {
         ForEach-Object { if ($_.Name -match '^(\d{3})-') { [int]$Matches[1] } } | Sort-Object)
     if ($steps.Count) { $kitFormat = $steps[-1] }
 
-    Check 'новая база — в списке копий формат, который ждёт кит' {
+    Check 'новая база — в agents-kit.json формат, который ждёт кит' {
         $got = Get-MarkerFormat $migBase
         if ($got -ne $kitFormat) { return "формат $got, ожидался $kitFormat" }
         return $null
@@ -1072,7 +1109,7 @@ try {
         finally { & git -C $migBase checkout -q -- agents-kit.json }
     }
 
-    Check 'список копий без формата или с нечисловым — не база' {
+    Check 'agents-kit.json без формата или с нечисловым — не база' {
         try {
             foreach ($bad in @($null, 'abc', 0)) {
                 Set-MarkerFormat $migBase $bad
@@ -1084,16 +1121,17 @@ try {
         finally { & git -C $migBase checkout -q -- agents-kit.json }
     }
 
-    # Шаги перевода проверяются на копии кита с поддельным шагом: у самого кита их может не быть.
+    # Порядок перевода проверяется на копии кита с поддельным шагом поверх настоящих: база стенда
+    # уже того формата, что ждёт кит, и поддельный шаг переводит её на следующий.
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'plugin') -Destination $kitCopy -Recurse
     $copyMigrations = Join-Path $kitCopy 'migrations'
-    Remove-Item -LiteralPath $copyMigrations -Recurse -Force -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Force -Path $copyMigrations | Out-Null
     $copyScripts = Join-Path $kitCopy 'scripts'
     $copyHook = Join-Path $copyScripts 'session-start.ps1'
     $copyGate = Join-Path $copyScripts 'commit-gate.ps1'
     $copyMigrate = Join-Path $copyScripts 'base-migrate.ps1'
-    $stepPath = Join-Path $copyMigrations '002-boundaries-to-limits.ps1'
+    $fakeFormat = $kitFormat + 1
+    $stepPath = Join-Path $copyMigrations ('{0:D3}-boundaries-to-limits.ps1' -f $fakeFormat)
     Set-Content -LiteralPath $stepPath -Encoding utf8 -Value @(
         'param([string]$Base)',
         '$to = Join-Path $Base ''limits.md''',
@@ -1110,7 +1148,7 @@ try {
 
     Check 'база в прежнем формате — гейт отказывает коммиту в базу' {
         $reason = Invoke-CommitGate $migRepo "git -C `"$migBase`" commit -m x -- product.md" $copyGate
-        if ($reason -notmatch 'кит ждёт формат 2') { return "гейт не отказал: $reason" }
+        if ($reason -notmatch "кит ждёт формат $fakeFormat") { return "гейт не отказал: $reason" }
         return $null
     }
 
@@ -1121,7 +1159,7 @@ try {
             $r = Invoke-BaseMigrate $copyMigrate $migRepo
             if ($r.code -eq 0) { return 'скрипт не отказал' }
             if ($r.text -notmatch 'stray\.md') { return "не назван незакоммиченный файл: $($r.text)" }
-            if ((Get-MarkerFormat $migBase) -ne 1) { return 'формат поднят' }
+            if ((Get-MarkerFormat $migBase) -ne $kitFormat) { return 'формат поднят' }
             if (-not (Test-Path -LiteralPath (Join-Path $migBase 'boundaries.md'))) { return 'шаг всё-таки сделан' }
             return $null
         }
@@ -1132,7 +1170,7 @@ try {
         $before = Get-CommitCount $migBase
         $r = Invoke-BaseMigrate $copyMigrate $migRepo
         if ($r.code -ne 0) { return "код возврата $($r.code): $($r.text)" }
-        if ((Get-MarkerFormat $migBase) -ne 2) { return "формат $(Get-MarkerFormat $migBase), ожидался 2" }
+        if ((Get-MarkerFormat $migBase) -ne $fakeFormat) { return "формат $(Get-MarkerFormat $migBase), ожидался $fakeFormat" }
         if (-not (Test-Path -LiteralPath (Join-Path $migBase 'limits.md')) -or (Test-Path -LiteralPath (Join-Path $migBase 'boundaries.md'))) { return 'шаг не сделан' }
         if ((Get-CommitCount $migBase) -ne $before + 1) { return "коммитов прибавилось $((Get-CommitCount $migBase) - $before), ожидался 1" }
         $dirty = @(& git -C $migBase status --porcelain | Where-Object { $_ })
@@ -1148,12 +1186,12 @@ try {
         return $null
     }
 
-    Check 'новая база на ките с шагами — в списке копий последний формат' {
+    Check 'новая база на ките с шагами — в agents-kit.json последний формат' {
         New-TestRepo $newRepo
         Invoke-BaseInit $newBase | Out-Null
         & pwsh -NoProfile -File (Join-Path $copyScripts 'link.ps1') -Path $newRepo -Base $newBase | Out-Null
         $got = Get-MarkerFormat $newBase
-        if ($got -ne 2) { return "формат $got, ожидался 2" }
+        if ($got -ne $fakeFormat) { return "формат $got, ожидался $fakeFormat" }
         return $null
     }
 
@@ -1169,13 +1207,60 @@ try {
         $r = Invoke-BaseMigrate $copyMigrate $migRepo
         if ($r.code -eq 0) { return 'скрипт не отказал' }
         if ($r.text -notmatch 'boundaries\.md не опознан') { return "не названа причина: $($r.text)" }
-        if ((Get-MarkerFormat $migBase) -ne 1) { return 'формат поднят' }
+        if ((Get-MarkerFormat $migBase) -ne $kitFormat) { return 'формат поднят' }
         if ((Get-CommitCount $migBase) -ne $before) { return 'коммит всё-таки сделан' }
         # Концы строк при откате ставит git по настройке машины, сравнивается текст.
         if ((Get-Content -LiteralPath (Join-Path $migBase 'product.md') -Raw).Replace("`r`n", "`n") -ne $product.Replace("`r`n", "`n")) { return 'product.md не откачен' }
         $dirty = @(& git -C $migBase status --porcelain --untracked-files=all | Where-Object { $_ })
         if ($dirty.Count) { return "в базе осталось: $($dirty -join '; ')" }
         return $null
+    }
+
+    # Настоящие шаги перевода — на базе формата 1, собранной руками: список копий в agents-kit.json,
+    # память плоско в work/. Запись о копии, которой на диске нет, — копия другой машины.
+    New-TestRepo $v1Repo
+    Invoke-BaseInit $v1Base | Out-Null
+    & git -C $v1Repo config --local agents-kit.base $v1Base
+    @{ kit = 'agents-kit'; version = 1; workspaces = @($v1Repo, 'D:\elsewhere\v1') } | ConvertTo-Json |
+        Set-Content -LiteralPath (Join-Path $v1Base 'agents-kit.json') -Encoding utf8
+    $v1Memory = Join-Path $v1Base 'work\v1-task.md'
+    Set-KitMemory $v1Memory $v1Repo 'работа прежнего формата'
+    $v1Foreign = Join-Path $v1Base 'work\elsewhere-task.md'
+    Set-KitMemory $v1Foreign 'D:\elsewhere\v1' 'работа другой машины'
+    & git -C $v1Base add -A 2>$null
+    & git -C $v1Base commit -qm 'формат 1' | Out-Null
+    $v1Migrate = Join-Path $scripts 'base-migrate.ps1'
+
+    Check 'перевод с формата 1 — память копии другой машины останавливает, база не тронута' {
+        $r = Invoke-BaseMigrate $v1Migrate $v1Repo
+        if ($r.code -eq 0) { return 'скрипт не отказал' }
+        if ($r.text -notmatch 'elsewhere-task\.md') { return "не назван файл памяти: $($r.text)" }
+        if ((Get-MarkerFormat $v1Base) -ne 1) { return 'формат поднят' }
+        if (-not (Test-Path -LiteralPath $v1Memory)) { return 'своя память уехала' }
+        if (Test-Path -LiteralPath (Join-Path $v1Base 'local\workspaces.json')) { return 'список копий всё-таки записан' }
+        return $null
+    }
+
+    & git -C $v1Base rm -q -- $v1Foreign
+    & git -C $v1Base commit -qm 'задача другой машины закрыта' | Out-Null
+
+    Check 'перевод с формата 1 — список копий этой машины в local, память в каталоге машины, связь сошлась' {
+        $before = Get-CommitCount $v1Base
+        $r = Invoke-BaseMigrate $v1Migrate $v1Repo
+        if ($r.code -ne 0) { return "код возврата $($r.code): $($r.text)" }
+        if ((Get-MarkerFormat $v1Base) -ne $kitFormat) { return "формат $(Get-MarkerFormat $v1Base), ожидался $kitFormat" }
+        $marker = Get-Content -LiteralPath (Join-Path $v1Base 'agents-kit.json') -Raw | ConvertFrom-Json
+        if ($marker.PSObject.Properties.Name -contains 'workspaces') { return 'в agents-kit.json остался список копий' }
+        $list = @((Get-Content -LiteralPath (Join-Path $v1Base 'local\workspaces.json') -Raw | ConvertFrom-Json).workspaces)
+        if ($list.Count -ne 1 -or $list[0] -ine $v1Repo) { return "в списке копий «$($list -join ', ')», ожидалась одна «$v1Repo»" }
+        if (Test-Path -LiteralPath $v1Memory) { return 'память осталась по прежнему адресу' }
+        if ((Get-CommitCount $v1Base) -ne $before + $kitFormat - 1) { return "коммитов прибавилось $((Get-CommitCount $v1Base) - $before), ожидалось $($kitFormat - 1)" }
+        $dirty = @(& git -C $v1Base status --porcelain --untracked-files=all | Where-Object { $_ })
+        if ($dirty.Count) { return "в базе осталось незакоммиченное: $($dirty -join '; ')" }
+        $got = Invoke-Hook $v1Repo
+        $address = Find-HookMemoryPath $got
+        if (-not $address -or -not (Test-Path -LiteralPath $address)) { return "хук назвал адрес «$address», а памяти там нет" }
+        return Test-HookText $got 'работа прежнего формата'
     }
 
     # Дальше — не стенд, а сам репозиторий кита.
