@@ -368,7 +368,7 @@ try {
         $saved = Get-Content -LiteralPath $flow -Raw
         New-Item -ItemType Directory -Force -Path $stages | Out-Null
         Set-Content -LiteralPath $flow -Encoding utf8 -Value '# Сценарии', '',
-            '## полный', 'когда: новая возможность', '1. [Реализация](stages/impl.md)', '2. [Ревью](stages/review.md)', '   - возврат: замечания — этап «Реализация»', '   - кругов: 3', '',
+            '## полный', 'когда: новая возможность', '1. [Реализация](stages/impl.md)', '2. [Ревью](stages/review.md)', '   - возврат: замечания — этап «Реализация»', '     - кругов: 3', '',
             '## документация', 'когда: правка текстов', '1. [Написание](stages/writing.md)', '2. [Ревью](stages/review.md)', '   - возврат: замечания — этап «Написание»'
         foreach ($s in @(@('impl', 'Реализация'), @('review', 'Ревью'), @('writing', 'Написание'), @('spare', 'Запасная'))) {
             Set-Content -LiteralPath (Join-Path $stages "$($s[0]).md") -Encoding utf8 `
