@@ -21,6 +21,7 @@
 $script:KitServedFiles = @('product.md', 'team.md')
 $script:KitOperatorServedFiles = @('autonomy.md')
 $script:KitDecisionsDir = 'decisions'
+$script:KitTrackerFile = 'tracker.md'
 $script:KitArtifactsDir = 'artifacts'
 # В папке оператора: рамки, субагенты и флоу — каталог: scenarios.md со списками сценариев
 # и stages/ с файлами этапов. Ссылка в списке ведёт в stages/ от scenarios.md.
@@ -181,7 +182,7 @@ function Read-KitReference([string]$Name) {
 # Потолки и ключи из справок кита. Несошедшийся разбор не молчит: файл без разобранного
 # правила даёт FAIL, а не проходит непроверенным.
 function Get-KitLayoutRules {
-    $result = @{ files = @{}; memory = $null; decision = $null; artifact = $null; flowKeys = [ordered]@{}; executors = @(); questionKeys = [ordered]@{}; backlogFields = [ordered]@{} }
+    $result = @{ files = @{}; memory = $null; decision = $null; artifact = $null; flowKeys = [ordered]@{}; executors = @(); questionKeys = [ordered]@{}; backlogFields = [ordered]@{}; trackerSections = @() }
 
     # Таблица ключей — единственная в своём разделе с колонкой «да/нет».
     $memoryText = Read-KitReference 'task-memory.md'
@@ -217,6 +218,8 @@ function Get-KitLayoutRules {
 
     $artifact = [regex]::Match($text, 'Потолок артефакта — (\d+) МБ\.')
     if ($artifact.Success) { $result.artifact = [int]$artifact.Groups[1].Value }
+
+    $result.trackerSections = @([regex]::Matches((Get-KitLayoutSection $text '## Трекер'), '(?m)^\|\s*`##\s+([^`]+?)\s*`\s*\|') | ForEach-Object { $_.Groups[1].Value })
     return $result
 }
 
@@ -515,8 +518,42 @@ function Get-KitBacklogFindings([string]$Path, [string]$Label, $Rules) {
     Get-KitBacklogFieldFindings $Label ($head -join "`n") $entries $Rules
 }
 
+# tracker.md — разделы из таблицы раскладки: /drive и /backlog читают свой раздел по заголовку,
+# и нет его — момент прошёл бы без трекера молча. Раздел — заголовок «##» вне блока кода
+# до следующего такого же; пустой — без единой непустой строки после вырезки комментариев.
+function Get-KitTrackerFindings([string]$Path, [string]$Label, $Rules) {
+    if (-not $Rules.trackerSections.Count) {
+        New-KitFinding 'FAIL' $Label 'перечень разделов не разобран — таблица в разделе «Трекер» раскладки'
+        return
+    }
+    $sections = [ordered]@{}
+    $current = $null
+    $fence = $false
+    foreach ($line in ((Read-KitMarkdown $Path) -split '\r?\n')) {
+        if ($line -match '^```') { $fence = -not $fence }
+        $heading = if ($fence) { $null } else { [regex]::Match($line, '^##\s+(.+?)\s*$') }
+        if ($heading -and $heading.Success) {
+            $current = $heading.Groups[1].Value
+            if (-not $sections.Contains($current)) { $sections[$current] = $false }
+            continue
+        }
+        if ($current -and $line.Trim()) { $sections[$current] = $true }
+    }
+
+    $groups = [ordered]@{}
+    foreach ($name in $Rules.trackerSections) {
+        if (-not $sections.Contains($name)) { Add-KitGroupedFinding $groups 'FAIL' 'нет разделов' 'дописать скиллом /tracker' "«## $name»" }
+        elseif (-not $sections[$name]) { Add-KitGroupedFinding $groups 'FAIL' 'пусты разделы' 'написать скиллом /tracker' "«## $name»" }
+    }
+    foreach ($name in $sections.Keys) {
+        if ($Rules.trackerSections -notcontains $name) { Add-KitGroupedFinding $groups 'FAIL' 'разделы не из таблицы раскладки' 'своих разделов не заводят — поправить скиллом /tracker' "«## $name»" }
+    }
+    Get-KitGroupedFindings $groups $Label
+}
+
 # Каркас на месте — в корне базы, в папке оператора и в личном репозитории; подаваемые файлы
-# в потолке; бэклог сходится со счётчиком и перечнем полей. О файлах сверх каркаса сверка молчит.
+# в потолке; бэклог сходится со счётчиком и перечнем полей, tracker.md — с разделами.
+# О прочих файлах сверх каркаса сверка молчит.
 function Get-KitRootFindings([string]$Base, $Ceilings) {
     $operator = Get-KitOperatorRoot $Base
     $personal = Get-KitPersonalDir $Base
@@ -541,6 +578,10 @@ function Get-KitRootFindings([string]$Base, $Ceilings) {
     $backlog = Join-Path $personal 'backlog.md'
     if (Test-Path -LiteralPath $backlog -PathType Leaf) {
         Get-KitBacklogFindings $backlog (Get-KitRelativePath $Base (ConvertTo-KitPath $backlog)) $Ceilings
+    }
+    $tracker = Join-Path $Base $script:KitTrackerFile
+    if (Test-Path -LiteralPath $tracker -PathType Leaf) {
+        Get-KitTrackerFindings $tracker $script:KitTrackerFile $Ceilings
     }
 }
 
@@ -1548,6 +1589,7 @@ function Get-KitCommitFindings([string]$Base, [string]$Worktree, [string[]]$File
         elseif ($rel -match "^$($script:KitDecisionsDir)\\[^\\]+\.md$") {
             Get-KitDecisionFileFindings $path $rel $rules
         }
+        elseif ($rel -ieq $script:KitTrackerFile) { Get-KitTrackerFindings $path $script:KitTrackerFile $rules }
         Find-KitSecrets $path $rel
     }
     if ($flowTouched) { Get-KitFlowFindings $Base $Worktree $rules }

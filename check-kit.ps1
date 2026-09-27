@@ -464,6 +464,22 @@ try {
         return $problem
     }
 
+    # Разделы tracker.md сверка берёт из таблицы раскладки: разбор не сошёлся — отказ и целому файлу.
+    Check 'tracker.md — все разделы гейт пускает, без раздела — отказ с /tracker' {
+        $tracker = Join-Path $base 'tracker.md'
+        $sections = 'Где задачи', 'Показ бэклога', 'Взятие задачи', 'Задача закрыта', 'Вынос записи бэклога'
+        try {
+            Set-Content -LiteralPath $tracker -Encoding utf8 -Value (@('# Проект — трекер') + @($sections | ForEach-Object { '', "## $_", 'слова' }))
+            $reason = Invoke-CommitGate $repo "git -C `"$base`" commit -m x -- tracker.md"
+            if ($reason) { return "гейт остановил полный файл: «$reason»" }
+            Set-Content -LiteralPath $tracker -Encoding utf8 -Value (@('# Проект — трекер') + @($sections | Select-Object -First 4 | ForEach-Object { '', "## $_", 'слова' }))
+            $reason = Invoke-CommitGate $repo "git -C `"$base`" commit -m x -- tracker.md"
+            if ($reason -notmatch 'Вынос записи бэклога' -or $reason -notmatch '/tracker') { return "гейт не назвал раздел и /tracker: «$reason»" }
+            return $null
+        }
+        finally { Remove-Item -LiteralPath $tracker -Force -ErrorAction SilentlyContinue }
+    }
+
     # Флоу нужен только /flow и /drive, и в каждую сессию он не приезжает.
     Check 'сценарии и этапы базы — в контекст не попадают' {
         $flow = Join-Path (Get-OpDir $base) 'flow\scenarios.md'
@@ -1730,6 +1746,32 @@ try {
         $fails = @($got -split "`n" | Where-Object { $_ -match '^- \*\*FAIL\*\*' })
         if ($fails.Count) { return "сверка после перевода красная: $($fails -join ' | ')" }
         return Test-HookText $got 'общая рамка формата 3', 'people/op/autonomy.md'
+    }
+
+    # Формат 4: tracker.md свободным текстом. Собирается из свежей базы.
+    $v4Repo = Join-Path $root 'v4'
+    $v4Base = Join-Path $root 'base-v4'
+    New-TestRepo $v4Repo
+    Invoke-BaseInit $v4Base | Out-Null
+    & pwsh -NoProfile -File $link -Path $v4Repo -Base $v4Base | Out-Null
+    Set-MarkerFormat $v4Base 4
+    Set-Content -LiteralPath (Join-Path $v4Base 'tracker.md') -Encoding utf8 -Value '# Проект — трекер', '', 'Задачи в GitHub, ходим gh.'
+    Commit-All $v4Base 'формат 4'
+
+    Check 'перевод с формата 4 — прежний tracker.md удалён, вывод зовёт /tracker' {
+        $before = Get-CommitCount $v4Base
+        $r = Invoke-BaseMigrate $v1Migrate $v4Repo
+        if ($r.code -ne 0) { return "код возврата $($r.code): $($r.text)" }
+        if ((Get-MarkerFormat $v4Base) -ne $kitFormat) { return "формат $(Get-MarkerFormat $v4Base), ожидался $kitFormat" }
+        if (Test-Path -LiteralPath (Join-Path $v4Base 'tracker.md')) { return 'tracker.md остался' }
+        if ($r.text -notmatch '/tracker') { return "вывод не называет /tracker: $($r.text)" }
+        if ((Get-CommitCount $v4Base) -ne $before + $kitFormat - 4) { return "коммитов прибавилось $((Get-CommitCount $v4Base) - $before), ожидалось $($kitFormat - 4)" }
+        $dirty = @(& git -C $v4Base status --porcelain --untracked-files=all | Where-Object { $_ })
+        if ($dirty.Count) { return "в базе осталось незакоммиченное: $($dirty -join '; ')" }
+        $got = Invoke-Hook $v4Repo
+        $fails = @($got -split "`n" | Where-Object { $_ -match '^- \*\*FAIL\*\*' })
+        if ($fails.Count) { return "сверка после перевода красная: $($fails -join ' | ')" }
+        return Test-HookText $got 'проект под китом'
     }
 
     # Дальше — не стенд, а сам репозиторий кита.
