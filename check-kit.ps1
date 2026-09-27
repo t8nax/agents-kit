@@ -1750,6 +1750,9 @@ try {
     Check 'упомянутые в тексте кита файлы кита существуют' {
         $names = @{}
         foreach ($f in $kitFiles) { $names[(Split-Path $f -Leaf)] = $true }
+        # Файл базы, которого нет в каркасе, назван в таблице «Куда именно» раскладки.
+        $layout = Get-Content -LiteralPath (Join-Path $kit 'plugin\reference\base-layout.md') -Raw -Encoding utf8
+        foreach ($m in [regex]::Matches($layout, '(?m)^\|\s*`([\p{L}\p{Nd}_.-]+\.md)`\s*\|')) { $names[$m.Groups[1].Value] = $true }
         $found = foreach ($entry in $kitText) {
             # Путь от корня репозитория, а в тексте внутри plugin — от plugin: так его видит
             # пользователь кита. .claude в plugin не лежит — его путь всегда от корня.
