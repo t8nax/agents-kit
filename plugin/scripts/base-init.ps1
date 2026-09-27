@@ -2,8 +2,8 @@
 #   pwsh -NoProfile -File scripts\base-init.ps1 -Path <каталог базы> -Operator <имя оператора>
 #        [-Name <имя проекта>] [-Prefix <буквы номеров бэклога>] [-Remote <адрес личного репозитория>]
 #
-# Общий каркас — template\base; папка оператора people\<имя>\ — template\operator; личный
-# репозиторий local\me\ — template\me. Повторный прогон довозит недостающее и не трогает лежащее.
+# Общий каркас — template\base; личный репозиторий local\me\ — template\me; папка оператора
+# people\<имя>\ — пустой флоу из template\me. Повторный прогон довозит недостающее и не трогает лежащее.
 # Связывание основной копии с базой и список копий — link.ps1.
 # Что лежит в базе и по каким правилам — reference\base-layout.md.
 [CmdletBinding(SupportsShouldProcess = $true)]
@@ -23,7 +23,7 @@ try { [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false) } catc
 . (Join-Path $PSScriptRoot 'base-check.ps1')
 
 $templateRoot = ConvertTo-KitPath (Join-Path $PSScriptRoot '..\template')
-foreach ($part in 'base', 'operator', 'me') {
+foreach ($part in 'base', 'me') {
     if (-not (Test-Path -LiteralPath (Join-Path $templateRoot $part) -PathType Container)) {
         throw "каталога шаблона «$templateRoot\$part» нет — клон кита неполон"
     }
@@ -114,7 +114,9 @@ function Get-KitTemplateFiles([string]$Part, [string]$Target) {
 # тот, кто назвал имя, и в неё скрипт не пишет.
 $peopleTaken = Test-Path -LiteralPath $people -PathType Container
 $plan = @(Get-KitTemplateFiles 'base' $baseN)
-if (-not $peopleTaken) { $plan += @(Get-KitTemplateFiles 'operator' $people) }
+# Папка оператора заводится сразу — по ней видно, что имя занято. Своего каркаса у неё нет: в неё
+# ложится пустой флоу из каркаса личного репозитория, а своё оператор выкладывает сам.
+if (-not $peopleTaken) { $plan += @(Get-KitTemplateFiles 'me' $people | Where-Object { $_.name -ieq ($script:KitScenariosFile -replace '/', '\') }) }
 $personalFresh = -not (Test-Path -LiteralPath $personal)
 if (-not $personalFresh -and -not (Test-KitPersonalRepo $baseN)) {
     throw "«$personal» есть, но это не git-репозиторий — личный репозиторий заводится с нуля; разобраться должен оператор"

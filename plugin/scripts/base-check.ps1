@@ -10,7 +10,7 @@
 #   Get-KitCommitFindings  файлы коммита в базу или в личный репозиторий — то, что уедет в историю
 #
 # Судятся база и свой личный репозиторий. Папки в people\ — выложенное операторами для коллег:
-# агент по ним не работает, и сверка смотрит в них только каркас своей.
+# агент по ним не работает, и сверка смотрит только, есть ли флоу в своей.
 
 . (Join-Path $PSScriptRoot 'link-state.ps1')
 
@@ -224,8 +224,8 @@ function Get-KitLayoutRules {
 }
 
 # Файлы каркаса — путём от корня своего шаблона — берутся из шаблона, а не перечисляются здесь:
-# новый файл шаблона становится известным сверке без её правки. Part — base (корень базы),
-# operator (папка оператора) или me (личный репозиторий).
+# новый файл шаблона становится известным сверке без её правки. Part — base (корень базы)
+# или me (личный репозиторий).
 function Get-KitTemplateNames([string]$Part) {
     $template = ConvertTo-KitPath (Join-Path $PSScriptRoot "..\template\$Part")
     try {
@@ -551,15 +551,21 @@ function Get-KitTrackerFindings([string]$Path, [string]$Label, $Rules) {
     Get-KitGroupedFindings $groups $Label
 }
 
-# Каркас на месте — в корне базы, в папке оператора и в личном репозитории; подаваемые файлы
-# в потолке; бэклог сходится со счётчиком и перечнем полей, tracker.md — с разделами.
+# Каркас на месте — в корне базы и в личном репозитории, своя папка оператора в базе есть;
+# подаваемые файлы в потолке; бэклог сходится со счётчиком и перечнем полей, tracker.md — с разделами.
 # О прочих файлах сверх каркаса сверка молчит.
 function Get-KitRootFindings([string]$Base, $Ceilings) {
     $operator = Get-KitOperatorRoot $Base
     $personal = Get-KitPersonalDir $Base
     $roots = @([pscustomobject]@{ part = 'base'; dir = $Base })
-    if ($operator) { $roots += [pscustomobject]@{ part = 'operator'; dir = (Get-KitOperatorDir $Base $operator.name) } }
     $roots += [pscustomobject]@{ part = 'me'; dir = $personal }
+    # В существующую папку оператора base-init.ps1 не пишет: пропавший флоу в ней кладёт выкладывание.
+    if ($operator) {
+        $shown = Join-Path (Get-KitOperatorDir $Base $operator.name) ($script:KitScenariosFile -replace '/', '\')
+        if (-not (Test-Path -LiteralPath $shown -PathType Leaf)) {
+            New-KitFinding 'WARN' (Get-KitRelativePath $Base (ConvertTo-KitPath $shown)) 'в папке оператора нет флоу — коллегам не видно, что имя занято; выложить ли флоу скиллом /flow, решает оператор'
+        }
+    }
     $fix = 'довезёт повторный base-init.ps1'
     if ($operator) { $fix = "довезёт $(Get-KitOperatorCommand $Base $operator.name)" }
     foreach ($root in $roots) {

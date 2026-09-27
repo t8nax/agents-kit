@@ -305,6 +305,9 @@ try {
         foreach ($f in 'product.md', 'team.md', '.gitignore', 'agents-kit.json', "people\$script:op\flow\scenarios.md", 'local\me\autonomy.md', 'local\me\flow\scenarios.md', 'local\me\backlog.md', 'local\me.json') {
             if (-not (Test-Path -LiteralPath (Join-Path $base $f) -PathType Leaf)) { return "нет файла $f" }
         }
+        if ((Get-Content -LiteralPath (Join-Path (Get-PeopleDir $base) 'flow\scenarios.md') -Raw) -cne (Get-Content -LiteralPath (Join-Path (Get-MeDir $base) 'flow\scenarios.md') -Raw)) {
+            return 'в папке оператора не тот же пустой флоу, что в личном репозитории'
+        }
         foreach ($f in 'backlog.md', 'flow', 'autonomy.md', 'boundaries.md') {
             if (Test-Path -LiteralPath (Join-Path $base $f)) { return "в корне базы лежит $f — ему место не там" }
         }
@@ -2002,7 +2005,7 @@ try {
             # пользователь кита. .claude в plugin не лежит — его путь всегда от корня.
             # Файл или каталог должен найтись среди файлов кита.
             $from = if ($entry.file -like 'plugin/*') { 'plugin/' } else { '' }
-            foreach ($m in [regex]::Matches($entry.text, '(?<![\p{L}\p{Nd}_./\\-])((?:plugin[/\\])?(?:\.claude[/\\](?:skills|agents)|hooks|reference|scripts|skills|template[/\\](?:base|operator|me))[/\\][\p{L}\p{Nd}_./\\-]*)')) {
+            foreach ($m in [regex]::Matches($entry.text, '(?<![\p{L}\p{Nd}_./\\-])((?:plugin[/\\])?(?:\.claude[/\\](?:skills|agents)|hooks|reference|scripts|skills|template[/\\](?:base|me))[/\\][\p{L}\p{Nd}_./\\-]*)')) {
                 $path = $m.Groups[1].Value.Replace('\', '/').TrimEnd('.')
                 if (-not $path.StartsWith('plugin/') -and -not $path.StartsWith('.claude/')) { $path = $from + $path }
                 if (-not ($kitFiles | Where-Object { $_ -eq $path -or $_.StartsWith($path.TrimEnd('/') + '/') })) {
