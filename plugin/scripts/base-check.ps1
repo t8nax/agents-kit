@@ -6,8 +6,11 @@
 # Находка — { severity; file; message; kind }: FAIL — база разошлась с правилами,
 # WARN — перечитать и решить, kind = secret — подозрение на секрет для оператора.
 #
-#   Get-KitBaseFindings    база целиком — то, что расходится само, без коммита
-#   Get-KitCommitFindings  файлы коммита, local/ и бэклог — то, что уедет в историю
+#   Get-KitBaseFindings    база и личный репозиторий целиком — то, что расходится само, без коммита
+#   Get-KitCommitFindings  файлы коммита в базу или в личный репозиторий — то, что уедет в историю
+#
+# Судятся своя папка оператора и свой личный репозиторий: чужие папки в people\ — работа
+# коллег, и что в них не так, решают они.
 
 . (Join-Path $PSScriptRoot 'link-state.ps1')
 
@@ -15,13 +18,27 @@
 # базы: подача корня везла бы в каждую сессию любой положенный туда .md.
 $script:KitServedFiles = @('product.md', 'boundaries.md')
 $script:KitDecisionsDir = 'decisions'
-$script:KitAgentsDir = 'agents'
 $script:KitArtifactsDir = 'artifacts'
-# Флоу — каталог: scenarios.md со списками сценариев и stages/ с файлами этапов. Ссылка
-# в списке ведёт в stages/ от scenarios.md.
+# В папке оператора: субагенты и флоу — каталог: scenarios.md со списками сценариев и stages/
+# с файлами этапов. Ссылка в списке ведёт в stages/ от scenarios.md.
+$script:KitAgentsDir = 'agents'
 $script:KitFlowDir = 'flow'
 $script:KitScenariosFile = 'flow/scenarios.md'
 $script:KitStagesDir = 'stages'
+
+# Папка оператора этой машины: каталог и подпись от корня базы, которой её называют находки.
+# Имени нет — $null: чья папка, не опознать, и судить нечего.
+function Get-KitOperatorRoot([string]$Base) {
+    $name = Get-KitOperatorName $Base
+    if (-not $name) { return $null }
+    return [pscustomobject]@{ dir = (Get-KitOperatorDir $Base $name); label = "people/$name"; name = $name }
+}
+
+function Get-KitScenariosLabel([string]$Base) {
+    $root = Get-KitOperatorRoot $Base
+    if (-not $root) { return $script:KitScenariosFile }
+    return "$($root.label)/$($script:KitScenariosFile)"
+}
 
 function New-KitFinding([string]$Severity, [string]$File, [string]$Message, [string]$Kind = '') {
     return [pscustomobject]@{ severity = $Severity; file = $File; message = $Message; kind = $Kind }
@@ -187,10 +204,11 @@ function Get-KitLayoutRules {
     return $result
 }
 
-# Файлы каркаса — путём от корня базы — берутся из шаблона, а не перечисляются здесь: новый
-# файл шаблона становится известным сверке без её правки.
-function Get-KitTemplateNames {
-    $template = ConvertTo-KitPath (Join-Path $PSScriptRoot '..\template\base')
+# Файлы каркаса — путём от корня своего шаблона — берутся из шаблона, а не перечисляются здесь:
+# новый файл шаблона становится известным сверке без её правки. Part — base (корень базы),
+# operator (папка оператора) или me (личный репозиторий).
+function Get-KitTemplateNames([string]$Part) {
+    $template = ConvertTo-KitPath (Join-Path $PSScriptRoot "..\template\$Part")
     try {
         return @(Get-ChildItem -LiteralPath $template -File -Force -Recurse -ErrorAction Stop |
                 ForEach-Object { (ConvertTo-KitPath $_.FullName).Substring($template.Length).TrimStart('\') })
@@ -240,9 +258,9 @@ function Get-KitLinkFindings([string]$Base) {
         New-KitFinding 'FAIL' 'agents-kit.json' 'agents-kit.json нет, он не читается или в нём нет формата базы — это не база кита'
         return
     }
-    $label = 'local\workspaces.json'
+    $label = 'local\me.json'
     if (-not (Get-KitWorkspaceList $Base)) {
-        New-KitFinding 'FAIL' $label 'список копий не разбирается — разобраться должен оператор'
+        New-KitFinding 'FAIL' $label 'файл машины не разбирается — разобраться должен оператор'
         return
     }
     $list = @(Get-KitWorkspaces $Base)
@@ -481,19 +499,32 @@ function Get-KitBacklogFindings([string]$Path, [string]$Label, $Rules) {
     Get-KitBacklogFieldFindings $Label ($head -join "`n") $entries $Rules
 }
 
-# Каркас на месте, файлы корня: подаваемые в потолке, бэклог сходится со счётчиком и перечнем полей.
-# О файлах сверх каркаса сверка молчит.
+# Каркас на месте — в корне базы, в папке оператора и в личном репозитории; подаваемые файлы
+# в потолке; бэклог сходится со счётчиком и перечнем полей. О файлах сверх каркаса сверка молчит.
 function Get-KitRootFindings([string]$Base, $Ceilings) {
-    foreach ($name in Get-KitTemplateNames) {
-        if (-not (Test-Path -LiteralPath (Join-Path $Base $name) -PathType Leaf)) {
-            New-KitFinding 'WARN' $name 'файла из каркаса нет — довезёт повторный base-init.ps1'
+    $operator = Get-KitOperatorRoot $Base
+    $personal = Get-KitPersonalDir $Base
+    $roots = @([pscustomobject]@{ part = 'base'; dir = $Base })
+    if ($operator) { $roots += [pscustomobject]@{ part = 'operator'; dir = $operator.dir } }
+    $roots += [pscustomobject]@{ part = 'me'; dir = $personal }
+    $fix = 'довезёт повторный base-init.ps1'
+    if ($operator) { $fix = "довезёт $(Get-KitOperatorCommand $Base $operator.name)" }
+    foreach ($root in $roots) {
+        foreach ($name in Get-KitTemplateNames $root.part) {
+            $path = Join-Path $root.dir $name
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+                New-KitFinding 'WARN' (Get-KitRelativePath $Base (ConvertTo-KitPath $path)) "файла из каркаса нет — $fix"
+            }
         }
     }
     foreach ($file in @(Get-ChildItem -LiteralPath $Base -File -ErrorAction SilentlyContinue | Where-Object { $_.Extension -ieq '.md' })) {
         if ($script:KitServedFiles -contains $file.Name) {
             Get-KitKnowledgeCeilingFindings $file.FullName $file.Name $Ceilings
         }
-        elseif ($file.Name -ieq 'backlog.md') { Get-KitBacklogFindings $file.FullName $file.Name $Ceilings }
+    }
+    $backlog = Join-Path $personal 'backlog.md'
+    if (Test-Path -LiteralPath $backlog -PathType Leaf) {
+        Get-KitBacklogFindings $backlog (Get-KitRelativePath $Base (ConvertTo-KitPath $backlog)) $Ceilings
     }
 }
 
@@ -535,16 +566,18 @@ function Get-KitArtifactRefs([string]$Text) {
     return $names
 }
 
-# Кто держит артефакты: имя в нижнем регистре → { name; holders }. Ссылки ищутся во всех .md
-# базы на диске, и в незакоммиченных: соседняя копия держит свой файл ссылкой, которую ещё не
+# Кто держит артефакты: имя в нижнем регистре → { name; holders }. Артефакты у каждого
+# репозитория свои — у общей базы и у личного, и ссылки ищутся во всех .md своего репозитория
+# на диске, и в незакоммиченных: соседняя копия держит свой файл ссылкой, которую ещё не
 # закоммитила. Файл ссылается на артефакт, а не артефакт на файл, поэтому обхода у ссылок нет.
-# Обход каталога, а не git ls-files: тот экранирует кириллицу в путях.
-function Get-KitArtifactHolders([string]$Base) {
+# Обход каталога, а не git ls-files: тот экранирует кириллицу в путях. Подпись держателя —
+# от корня базы.
+function Get-KitArtifactHolders([string]$Root, [string]$Base) {
     $refs = @{}
-    foreach ($file in @(Get-ChildItem -LiteralPath $Base -Recurse -File -Filter '*.md' -ErrorAction SilentlyContinue)) {
+    foreach ($file in @(Get-ChildItem -LiteralPath $Root -Recurse -File -Filter '*.md' -ErrorAction SilentlyContinue)) {
         $path = ConvertTo-KitPath $file.FullName
+        if ((Get-KitRelativePath $Root $path) -match '^(\.git|local)\\') { continue }
         $label = Get-KitRelativePath $Base $path
-        if ($label -match '^(\.git|local)\\') { continue }
         $found = Get-KitArtifactRefs (Read-KitMarkdown $path)
         foreach ($key in $found.Keys) {
             if (-not $refs.ContainsKey($key)) { $refs[$key] = [pscustomobject]@{ name = $found[$key]; holders = [System.Collections.Generic.List[string]]::new() } }
@@ -565,9 +598,9 @@ function Get-KitArtifactSizeFindings([string]$Path, [string]$Label, $Rules) {
     }
 }
 
-function Get-KitArtifactFindings([string]$Base, $Rules) {
-    $dir = Join-Path $Base $script:KitArtifactsDir
-    $refs = Get-KitArtifactHolders $Base
+function Get-KitArtifactFindings([string]$Root, [string]$Base, $Rules) {
+    $dir = Join-Path $Root $script:KitArtifactsDir
+    $refs = Get-KitArtifactHolders $Root $Base
     $present = @{}
     foreach ($item in @(Get-ChildItem -LiteralPath $dir -Force -ErrorAction SilentlyContinue | Sort-Object Name)) {
         $label = Get-KitRelativePath $Base (ConvertTo-KitPath $item.FullName)
@@ -575,14 +608,14 @@ function Get-KitArtifactFindings([string]$Base, $Rules) {
         $present[$item.Name.ToLowerInvariant()] = $true
         Get-KitArtifactSizeFindings (ConvertTo-KitPath $item.FullName) $label $Rules
         if (-not $refs.ContainsKey($item.Name.ToLowerInvariant())) {
-            New-KitFinding 'WARN' $label 'на артефакт не ссылается ни один .md базы — нужен: сослаться на него, нет: удалить git rm'
+            New-KitFinding 'WARN' $label 'на артефакт не ссылается ни один .md его репозитория — нужен: сослаться на него, нет: удалить git rm'
         }
     }
     # Висящая ссылка — предупреждение: artifacts/ бывает и каталогом проекта, названным в тексте.
     foreach ($key in @($refs.Keys | Sort-Object)) {
         if ($present.ContainsKey($key)) { continue }
         foreach ($holder in $refs[$key].holders) {
-            New-KitFinding 'WARN' $holder "ссылка на $($script:KitArtifactsDir)/$($refs[$key].name) — такого файла в базе нет: вернуть файл или убрать ссылку"
+            New-KitFinding 'WARN' $holder "ссылка на $($script:KitArtifactsDir)/$($refs[$key].name) — такого файла в его репозитории нет: вернуть файл или убрать ссылку"
         }
     }
 }
@@ -740,6 +773,7 @@ function Test-KitFlowMatchesMemory($Flow, [string]$Text) {
 # Имени нет — сценарий переименован или удалён; кандидата на новое имя сверка называет, но
 # строку не правит: удалённый сценарий с теми же этапами неотличим от переименованного.
 function Get-KitMemoryFlowFindings([string]$Base, [string]$Text, [string]$Label) {
+    $scenarios = Get-KitScenariosLabel $Base
     $name = Get-KitMemoryFlow $Text
     if (-not $name) {
         New-KitFinding 'FAIL' $Label 'нет строки «сценарий:» с именем сценария задачи — сценарий выбирается при взятии'
@@ -750,10 +784,10 @@ function Get-KitMemoryFlowFindings([string]$Base, [string]$Text, [string]$Label)
     if (-not $flow) {
         $same = @($flows | Where-Object { $_.items.Count -and (Test-KitFlowMatchesMemory $_ $Text) })
         if ($same.Count -eq 1) {
-            New-KitFinding 'FAIL' $Label "«сценарий: $name» — такого сценария в $($script:KitScenariosFile) нет; похоже, он переименован в «$($same[0].name)»: этапы те же — поправить строку «сценарий:» на это имя; сценарий удалён — вопрос оператору"
+            New-KitFinding 'FAIL' $Label "«сценарий: $name» — такого сценария в $scenarios нет; похоже, он переименован в «$($same[0].name)»: этапы те же — поправить строку «сценарий:» на это имя; сценарий удалён — вопрос оператору"
         }
         else {
-            New-KitFinding 'FAIL' $Label "«сценарий: $name» — такого сценария в $($script:KitScenariosFile) нет: переименован — поправить строку «сценарий:» на новое имя и перенести в «Сценарий» памяти его этапы; удалён — вопрос оператору"
+            New-KitFinding 'FAIL' $Label "«сценарий: $name» — такого сценария в $scenarios нет: переименован — поправить строку «сценарий:» на новое имя и перенести в «Сценарий» памяти его этапы; удалён — вопрос оператору"
         }
         return
     }
@@ -761,11 +795,11 @@ function Get-KitMemoryFlowFindings([string]$Base, [string]$Text, [string]$Label)
     if (-not @(Get-KitMemoryFlowStages $Text).Count) {
         $stray = Find-KitStrayStageSection $Text
         if ($stray) { New-KitFinding 'FAIL' $Label "в «Агенту → Сценарий» нет ни одного этапа — строки этапов стоят в «### $stray»: перенести их в «Сценарий»" }
-        else { New-KitFinding 'FAIL' $Label "в «Агенту → Сценарий» нет ни одного этапа — переписать этапы сценария «$($flow.name)» из $($script:KitScenariosFile)" }
+        else { New-KitFinding 'FAIL' $Label "в «Агенту → Сценарий» нет ни одного этапа — переписать этапы сценария «$($flow.name)» из $scenarios" }
         return
     }
     if (-not (Test-KitFlowMatchesMemory $flow $Text)) {
-        New-KitFinding 'WARN' $Label "«Агенту → Сценарий» разошлось со списком сценария «$($flow.name)» в $($script:KitScenariosFile) — сценарий могли поправить посреди задачи: перечитать и решить с оператором"
+        New-KitFinding 'WARN' $Label "«Агенту → Сценарий» разошлось со списком сценария «$($flow.name)» в $scenarios — сценарий могли поправить посреди задачи: перечитать и решить с оператором"
     }
 }
 
@@ -823,7 +857,7 @@ function Get-KitForeignMemoryFindings([string]$Base, [string]$Path, [string]$Lab
         New-KitFinding 'FAIL' $Label "копии «$declared» нет на диске — не своя, решает оператор"
         return
     }
-    if ((Get-KitWorkMemoryPath $Base $declared) -ine $Path) {
+    if ((Get-KitWorkMemoryPath (Get-KitPersonalDir $Base) $declared) -ine $Path) {
         New-KitFinding 'FAIL' $Label 'лежит не по адресу объявленной копии — не своя, решает оператор'
     }
 }
@@ -836,7 +870,7 @@ function Get-KitForeignMemoryFindings([string]$Base, [string]$Path, [string]$Lab
 # и называет; у чужой памяти читается только номер в заголовке. Своя она или чужая — по
 # объявленной копии, как и везде: по адресу лежит и файл, положенный руками.
 function Get-KitTakenRecordFindings([string]$Base, [string]$Path, [string]$Label, [string]$Worktree) {
-    $backlog = Join-Path $Base 'backlog.md'
+    $backlog = Join-Path (Get-KitPersonalDir $Base) 'backlog.md'
     if (-not (Test-Path -LiteralPath $backlog -PathType Leaf)) { return }
     $backlogText = Read-KitMarkdown $backlog
     $prefix = Get-KitBacklogPrefix $backlogText
@@ -850,7 +884,7 @@ function Get-KitTakenRecordFindings([string]$Base, [string]$Path, [string]$Label
 
     $declared = Get-KitDeclaredWorktree $text
     $fix = if ($declared -and $declared -ieq $Worktree) { 'вырезать запись' } else { 'не своя, решает оператор' }
-    New-KitFinding 'FAIL' 'backlog.md' "запись $prefix-$n взята — память «$Label» живёт, а запись осталась: $fix"
+    New-KitFinding 'FAIL' (Get-KitRelativePath $Base (ConvertTo-KitPath $backlog)) "запись $prefix-$n взята — память «$Label» живёт, а запись осталась: $fix"
 }
 
 # Ответ оператора вбирается и удаляется вместе с вопросом тем же обновлением, поэтому в коммит
@@ -906,8 +940,9 @@ function Get-KitStepQuote([string]$Text) {
 }
 
 # Шаги в коммите памяти: отмечались ли они по ходу и уходят ли закрытыми. Прошлая версия
-# берётся из HEAD базы; нет её — это коммит взятия или база без истории, и сравнивать не с чем,
-# а форму закрытых строк сверка называет и тогда. Правила — справка task-memory.md.
+# берётся из HEAD личного репозитория; нет её — это коммит взятия или репозиторий без истории,
+# и сравнивать не с чем, а форму закрытых строк сверка называет и тогда. Правила — справка
+# task-memory.md.
 function Get-KitStepFindings([string]$Base, [string]$Path, [string]$Label) {
     $now = Read-KitMarkdown $Path
     $nowSteps = @(Get-KitStepLines $now)
@@ -917,7 +952,9 @@ function Get-KitStepFindings([string]$Base, [string]$Path, [string]$Label) {
         }
     }
 
-    $previous = & git -C $Base show "HEAD:$($Label.Replace([char]92, [char]47))" 2>$null
+    $personal = Get-KitPersonalDir $Base
+    $rel = Get-KitRelativePath $personal (ConvertTo-KitPath $Path)
+    $previous = & git -C $personal show "HEAD:$($rel.Replace([char]92, [char]47))" 2>$null
     if ($LASTEXITCODE -ne 0 -or -not $previous) { return }
 
     $was = ConvertTo-KitMarkdown ($previous -join "`n")
@@ -989,10 +1026,11 @@ function Get-KitStepFindings([string]$Base, [string]$Path, [string]$Label) {
 # Судится память только этой машины: каталог соседней держит её работу, и жива ли та машина,
 # отсюда не видно. Файл прямо в work/ не принадлежит ни одной машине и не подаст его никто.
 function Get-KitWorkFindings([string]$Base, [string]$Worktree, $Ceilings) {
-    $work = Join-Path $Base 'work'
+    $personal = Get-KitPersonalDir $Base
+    $work = Join-Path $personal 'work'
     if (-not (Test-Path -LiteralPath $work -PathType Container)) { return }
-    $mine = Get-KitMemoryDir $Base
-    $own = Get-KitWorkMemoryPath $Base $Worktree
+    $mine = Get-KitMemoryDir $personal
+    $own = Get-KitWorkMemoryPath $personal $Worktree
 
     foreach ($item in @(Get-ChildItem -LiteralPath $work -Force -File -ErrorAction SilentlyContinue)) {
         $label = Get-KitRelativePath $Base (ConvertTo-KitPath $item.FullName)
@@ -1026,12 +1064,15 @@ function Get-KitAgentName([string]$Path) {
 # не позвать: имя файла и строка «name:» адресуют его вместе. Расхождение раскладки — одна
 # строка на вид: чинит его прогон скрипта, а не правка базы.
 function Get-KitAgentFindings([string]$Base, [string]$Worktree) {
-    $dir = Join-Path $Base $script:KitAgentsDir
+    $operator = Get-KitOperatorRoot $Base
+    if (-not $operator) { return }
+    $dir = Join-Path $operator.dir $script:KitAgentsDir
+    $agentsLabel = "$($operator.label)/$($script:KitAgentsDir)"
     $sources = [ordered]@{}
     foreach ($item in @(Get-ChildItem -LiteralPath $dir -Force -ErrorAction SilentlyContinue)) {
         $label = Get-KitRelativePath $Base (ConvertTo-KitPath $item.FullName)
-        if ($item.PSIsContainer) { New-KitFinding 'WARN' $label "подкаталог в $($script:KitAgentsDir)/ — субагенты лежат плоско, файлом на субагента"; continue }
-        if ($item.Extension -ine '.md') { New-KitFinding 'WARN' $label "не .md в $($script:KitAgentsDir)/ — каталог держит только субагентов"; continue }
+        if ($item.PSIsContainer) { New-KitFinding 'WARN' $label "подкаталог в $agentsLabel/ — субагенты лежат плоско, файлом на субагента"; continue }
+        if ($item.Extension -ine '.md') { New-KitFinding 'WARN' $label "не .md в $agentsLabel/ — каталог держит только субагентов"; continue }
         $name = Get-KitAgentName (ConvertTo-KitPath $item.FullName)
         if (-not $name) { New-KitFinding 'FAIL' $label 'нет строки «name:» — по ней субагента зовёт этап'; continue }
         if ($name -cne $item.BaseName) { New-KitFinding 'FAIL' $label "«name: $name» не совпадает с именем файла — зовут субагента по «name:», а кладут его файлом"; continue }
@@ -1071,7 +1112,7 @@ function Get-KitAgentFindings([string]$Base, [string]$Worktree) {
         Add-KitGroupedFinding $groups 'WARN' 'остались в копии от прежней раскладки' 'уберёт agents-deploy.ps1' $name
     }
 
-    Get-KitGroupedFindings $groups $script:KitAgentsDir
+    Get-KitGroupedFindings $groups $agentsLabel
 }
 
 # Субагенты рабочей копии и пользователя. Субагенты плагинов не видны, поэтому
@@ -1100,12 +1141,14 @@ function ConvertTo-KitTitleKey([string]$Name) {
 # стоит сразу и глубже него, иначе с -1. Любая другая непустая строка под пунктом уходит
 # в strays сценария: возврат с опечаткой, без дефиса или без отступа иначе пропал бы молча.
 # Разбор без находок: его берут и сверка флоу, и сверка памяти задачи, которая сводит свою
-# строку «сценарий:» со списком.
+# строку «сценарий:» со списком. Флоу — оператора этой машины; имени нет — сценариев нет.
 function Get-KitFlowList([string]$Base) {
     $flows = [System.Collections.Generic.List[object]]::new()
     $current = $null
     $returnIndent = -1
-    foreach ($line in ((Read-KitMarkdown (Join-Path $Base $script:KitScenariosFile)) -split '\r?\n')) {
+    $operator = Get-KitOperatorRoot $Base
+    if (-not $operator) { return $flows }
+    foreach ($line in ((Read-KitMarkdown (Join-Path $operator.dir $script:KitScenariosFile)) -split '\r?\n')) {
         $heading = [regex]::Match($line, '^##\s+(.+?)\s*$')
         if ($heading.Success) {
             $current = [pscustomobject]@{
@@ -1160,10 +1203,10 @@ function Get-KitFlowList([string]$Base) {
 
 # Файл этапа: заголовок «#» — название, под ним подряд пары «ключ: значение», после пустой
 # строки — описание. Нумерованный пункт описания ключом не считается, даже если в нём двоеточие.
-function Read-KitStage([string]$Path, [string]$File) {
+function Read-KitStage([string]$Path, [string]$File, [string]$FlowLabel) {
     $stage = [pscustomobject]@{
         file = $File
-        label = "$($script:KitFlowDir)/$($script:KitStagesDir)/$File"
+        label = "$FlowLabel/$($script:KitStagesDir)/$File"
         name = $null
         keys = [ordered]@{}
         body = [System.Collections.Generic.List[string]]::new()
@@ -1201,9 +1244,13 @@ function Read-KitStage([string]$Path, [string]$File) {
 # не под возвратом или второй у возврата. Длину сценария сверка
 # не проверяет; отсутствие scenarios.md назвала сверка каркаса.
 function Get-KitFlowFindings([string]$Base, [string]$Worktree, $Rules) {
-    if (-not (Test-Path -LiteralPath (Join-Path $Base $script:KitScenariosFile) -PathType Leaf)) { return }
+    $operator = Get-KitOperatorRoot $Base
+    if (-not $operator) { return }
+    $scenarios = Get-KitScenariosLabel $Base
+    $flowLabel = "$($operator.label)/$($script:KitFlowDir)"
+    if (-not (Test-Path -LiteralPath (Join-Path $operator.dir $script:KitScenariosFile) -PathType Leaf)) { return }
     if (-not $Rules.flowKeys.Contains('исполнитель') -or -not $Rules.executors.Count) {
-        New-KitFinding 'FAIL' $script:KitScenariosFile 'перечень ключей этапа не разобран — таблица в разделе «Этап» flow-stages.md кита'
+        New-KitFinding 'FAIL' $scenarios 'перечень ключей этапа не разобран — таблица в разделе «Этап» flow-stages.md кита'
         return
     }
 
@@ -1211,12 +1258,12 @@ function Get-KitFlowFindings([string]$Base, [string]$Worktree, $Rules) {
     # остаётся связным и ведёт в чужой этап молча. Отсюда и запрет одинаковых названий.
     $stages = [ordered]@{}
     $names = @{}
-    $dir = Join-Path (Join-Path $Base $script:KitFlowDir) $script:KitStagesDir
+    $dir = Join-Path (Join-Path $operator.dir $script:KitFlowDir) $script:KitStagesDir
     foreach ($item in @(Get-ChildItem -LiteralPath $dir -Force -ErrorAction SilentlyContinue | Sort-Object Name)) {
-        $label = "$($script:KitFlowDir)/$($script:KitStagesDir)/$($item.Name)"
+        $label = "$flowLabel/$($script:KitStagesDir)/$($item.Name)"
         if ($item.PSIsContainer) { New-KitFinding 'WARN' $label "подкаталог в $($script:KitStagesDir)/ — этапы лежат плоско, файлом на этап"; continue }
         if ($item.Extension -ine '.md') { New-KitFinding 'WARN' $label "не .md в $($script:KitStagesDir)/ — каталог держит только этапы"; continue }
-        $stage = Read-KitStage $item.FullName $item.Name
+        $stage = Read-KitStage $item.FullName $item.Name $flowLabel
         $stages[$item.Name.ToLowerInvariant()] = $stage
         if (-not $stage.name) { New-KitFinding 'FAIL' $label 'нет заголовка «# <название этапа>» — по нему этап называют сценарии, память и ссылки'; continue }
         $key = ConvertTo-KitTitleKey $stage.name
@@ -1230,44 +1277,44 @@ function Get-KitFlowFindings([string]$Base, [string]$Worktree, $Rules) {
     # Место этапа в каждом сценарии: файл этапа — его индекс в списке.
     $flows = @(Get-KitFlowList $Base)
     if (-not $flows.Count) {
-        New-KitFinding 'WARN' $script:KitScenariosFile 'сценариев нет — написать с оператором хотя бы один этап и один сценарий скиллом /flow'
+        New-KitFinding 'WARN' $scenarios 'сценариев нет — написать с оператором хотя бы один этап и один сценарий скиллом /flow'
     }
     $orders = @()
     $flowNames = @{}
     foreach ($flow in $flows) {
         $at = "сценарий «$($flow.name)»"
         $flowKey = ConvertTo-KitTitleKey $flow.name
-        if ($flowNames.ContainsKey($flowKey)) { New-KitFinding 'FAIL' $script:KitScenariosFile "${at}: имя уже у другого сценария — развести имена" }
+        if ($flowNames.ContainsKey($flowKey)) { New-KitFinding 'FAIL' $scenarios "${at}: имя уже у другого сценария — развести имена" }
         $flowNames[$flowKey] = $true
         if (-not $flow.items.Count) {
-            New-KitFinding 'FAIL' $script:KitScenariosFile "${at}: ни одного этапа — дописать список или убрать заголовок «##»"
+            New-KitFinding 'FAIL' $scenarios "${at}: ни одного этапа — дописать список или убрать заголовок «##»"
         }
         if ($flows.Count -gt 1 -and -not $flow.when) {
-            New-KitFinding 'FAIL' $script:KitScenariosFile "${at}: нет строки «когда:» или она пуста — написать, каким задачам этот сценарий"
+            New-KitFinding 'FAIL' $scenarios "${at}: нет строки «когда:» или она пуста — написать, каким задачам этот сценарий"
         }
 
         $order = [ordered]@{}
         $previous = 0
         foreach ($i in $flow.items) {
             if ($i.number -ne $previous + 1) {
-                New-KitFinding 'WARN' $script:KitScenariosFile "${at}: пункт $($i.number) после пункта $previous — этапы нумеруются подряд с 1"
+                New-KitFinding 'WARN' $scenarios "${at}: пункт $($i.number) после пункта $previous — этапы нумеруются подряд с 1"
             }
             $previous = $i.number
             if (-not $i.file) {
-                New-KitFinding 'FAIL' $script:KitScenariosFile "${at}: пункт $($i.number) «$($i.text)» — не ссылка на $($script:KitStagesDir)/<файл>.md"
+                New-KitFinding 'FAIL' $scenarios "${at}: пункт $($i.number) «$($i.text)» — не ссылка на $($script:KitStagesDir)/<файл>.md"
                 continue
             }
             $fileKey = $i.file.ToLowerInvariant()
             if (-not $stages.Contains($fileKey)) {
-                New-KitFinding 'FAIL' $script:KitScenariosFile "${at}: пункт $($i.number) ведёт на $($script:KitStagesDir)/$($i.file) — такого файла нет"
+                New-KitFinding 'FAIL' $scenarios "${at}: пункт $($i.number) ведёт на $($script:KitStagesDir)/$($i.file) — такого файла нет"
                 continue
             }
             $stage = $stages[$fileKey]
             if ($stage.name -and (ConvertTo-KitTitleKey $i.title) -ne (ConvertTo-KitTitleKey $stage.name)) {
-                New-KitFinding 'FAIL' $script:KitScenariosFile "${at}: пункт $($i.number) «$($i.title)», а заголовок $($stage.label) — «$($stage.name)»"
+                New-KitFinding 'FAIL' $scenarios "${at}: пункт $($i.number) «$($i.title)», а заголовок $($stage.label) — «$($stage.name)»"
             }
             if ($order.Contains($fileKey)) {
-                New-KitFinding 'FAIL' $script:KitScenariosFile "${at}: этап $($stage.label) стоит дважды"
+                New-KitFinding 'FAIL' $scenarios "${at}: этап $($stage.label) стоит дважды"
                 continue
             }
             $order[$fileKey] = $order.Count
@@ -1275,21 +1322,21 @@ function Get-KitFlowFindings([string]$Base, [string]$Worktree, $Rules) {
         $orders += [pscustomobject]@{ name = $flow.name; order = $order }
 
         foreach ($stray in $flow.strays) {
-            New-KitFinding 'FAIL' $script:KitScenariosFile "${at}: пункт $($stray.number) — строка «$($stray.text)» не возврат и не предел кругов; под пунктом этапа стоят только строки «- возврат:» и «- кругов:»"
+            New-KitFinding 'FAIL' $scenarios "${at}: пункт $($stray.number) — строка «$($stray.text)» не возврат и не предел кругов; под пунктом этапа стоят только строки «- возврат:» и «- кругов:»"
         }
         foreach ($i in $flow.items) {
             $head = "${at}: пункт $($i.number)"
             $limited = @{}
             foreach ($limit in $i.limits) {
                 if ($limit.of -lt 0) {
-                    New-KitFinding 'FAIL' $script:KitScenariosFile "${head}: предел кругов «$($limit.value)» не под возвратом — строка «- кругов:» стоит сразу под своим возвратом и глубже него"
+                    New-KitFinding 'FAIL' $scenarios "${head}: предел кругов «$($limit.value)» не под возвратом — строка «- кругов:» стоит сразу под своим возвратом и глубже него"
                     continue
                 }
                 if ($limited.ContainsKey($limit.of)) {
-                    New-KitFinding 'FAIL' $script:KitScenariosFile "${head}: у возврата «$($i.returns[$limit.of])» второй предел кругов — предел у возврата один"
+                    New-KitFinding 'FAIL' $scenarios "${head}: у возврата «$($i.returns[$limit.of])» второй предел кругов — предел у возврата один"
                 }
                 $limited[$limit.of] = $true
-                if ($limit.value -notmatch '^[1-9]\d*$') { New-KitFinding 'FAIL' $script:KitScenariosFile "${head}: предел кругов «$($limit.value)» — нужно целое от 1" }
+                if ($limit.value -notmatch '^[1-9]\d*$') { New-KitFinding 'FAIL' $scenarios "${head}: предел кругов «$($limit.value)» — нужно целое от 1" }
             }
         }
         # Направление — по месту в этом сценарии: список собран целиком, и цель, стоящая ниже
@@ -1299,31 +1346,31 @@ function Get-KitFlowFindings([string]$Base, [string]$Worktree, $Rules) {
                 $head = "${at}: пункт $($i.number)"
                 $numbered = [regex]::Matches($return, '(?i)\bэтап[а-яё]*\s+(\d+)')
                 foreach ($ref in $numbered) {
-                    New-KitFinding 'FAIL' $script:KitScenariosFile "${head}: возврат «$($ref.Value)» — на этап ссылаются названием в кавычках"
+                    New-KitFinding 'FAIL' $scenarios "${head}: возврат «$($ref.Value)» — на этап ссылаются названием в кавычках"
                 }
                 $target = [regex]::Match($return, '(?i)\bэтап[а-яё]*\s+«([^»]+)»')
                 if (-not $target.Success) {
                     if (-not $numbered.Count) {
-                        New-KitFinding 'FAIL' $script:KitScenariosFile "${head}: возврат «$return» — назад адресуются словом «этап» и названием в кавычках"
+                        New-KitFinding 'FAIL' $scenarios "${head}: возврат «$return» — назад адресуются словом «этап» и названием в кавычках"
                     }
                     continue
                 }
                 $targetName = $target.Groups[1].Value
                 if (-not $return.Substring(0, $target.Index).Trim([char[]]' —-:,')) {
-                    New-KitFinding 'FAIL' $script:KitScenariosFile "${head}: возврат к этапу «$targetName» без условия"
+                    New-KitFinding 'FAIL' $scenarios "${head}: возврат к этапу «$targetName» без условия"
                 }                $targetStage = $names[(ConvertTo-KitTitleKey $targetName)]
                 if (-not $targetStage) {
-                    New-KitFinding 'FAIL' $script:KitScenariosFile "${head}: возврат к этапу «$targetName» — такого этапа нет"
+                    New-KitFinding 'FAIL' $scenarios "${head}: возврат к этапу «$targetName» — такого этапа нет"
                     continue
                 }
                 $targetKey = $targetStage.file.ToLowerInvariant()
                 if (-not $order.Contains($targetKey)) {
-                    New-KitFinding 'FAIL' $script:KitScenariosFile "${head}: возврат к этапу «$targetName» — в этом сценарии его нет"
+                    New-KitFinding 'FAIL' $scenarios "${head}: возврат к этапу «$targetName» — в этом сценарии его нет"
                     continue
                 }
                 $fromKey = $(if ($i.file) { $i.file.ToLowerInvariant() } else { $null })
                 if ($fromKey -and $order.Contains($fromKey) -and $order[$targetKey] -ge $order[$fromKey]) {
-                    New-KitFinding 'FAIL' $script:KitScenariosFile "${head}: возврат к этапу «$targetName» — он стоит не раньше: сценарий вперёд не прыгает"
+                    New-KitFinding 'FAIL' $scenarios "${head}: возврат к этапу «$targetName» — он стоит не раньше: сценарий вперёд не прыгает"
                 }
             }
         }
@@ -1389,39 +1436,74 @@ function Get-KitFlowFindings([string]$Base, [string]$Worktree, $Rules) {
     }
 }
 
+function Get-KitSecretFindings([string]$Root, [string]$Base) {
+    # Незакоммиченное входит: это то, что вот-вот уедет в историю.
+    foreach ($rel in @(& git -C $Root ls-files --cached --others --exclude-standard 2>$null | Where-Object { $_ })) {
+        $path = ConvertTo-KitPath (Join-Path $Root $rel)
+        if (Test-Path -LiteralPath $path -PathType Leaf) { Find-KitSecrets $path (Get-KitRelativePath $Base $path) }
+    }
+}
+
 function Get-KitBaseFindings([string]$Base, [string]$Worktree) {
     $Base = ConvertTo-KitPath $Base
     $rules = Get-KitLayoutRules
+    $personal = Get-KitPersonalDir $Base
 
     Get-KitLinkFindings $Base
     Get-KitGitFindings $Base
     Get-KitRootFindings $Base $rules
     Get-KitDecisionFindings $Base $rules
-    Get-KitArtifactFindings $Base $rules
+    Get-KitArtifactFindings $Base $Base $rules
     Get-KitAgentFindings $Base $Worktree
     Get-KitFlowFindings $Base $Worktree $rules
-    Get-KitWorkFindings $Base $Worktree $rules
+    Get-KitSecretFindings $Base $Base
 
-    # Незакоммиченное входит: это то, что вот-вот уедет в историю.
-    foreach ($rel in @(& git -C $Base ls-files --cached --others --exclude-standard 2>$null | Where-Object { $_ })) {
-        $path = ConvertTo-KitPath (Join-Path $Base $rel)
-        if (Test-Path -LiteralPath $path -PathType Leaf) { Find-KitSecrets $path (Get-KitRelativePath $Base $path) }
+    if (-not (Test-KitPersonalRepo $Base)) { return }
+    Get-KitArtifactFindings $personal $Base $rules
+    Get-KitWorkFindings $Base $Worktree $rules
+    Get-KitSecretFindings $personal $Base
+}
+
+# Артефакты, на которые в HEAD ссылался .md коммита: коммит мог оставить их без ссылок.
+function Add-KitFormerArtifactRefs($Artifacts, [string]$Repo, [string]$Rel) {
+    if ($Rel -notmatch '\.md$') { return }
+    $previous = & git -C $Repo show "HEAD:$($Rel.Replace([char]92, [char]47))" 2>$null
+    if ($LASTEXITCODE -ne 0 -or -not $previous) { return }
+    $was = Get-KitArtifactRefs (ConvertTo-KitMarkdown ($previous -join "`n"))
+    foreach ($key in $was.Keys) { $Artifacts[$key] = $was[$key] }
+}
+
+# Артефакты своего репозитория, которые после коммита лежат без единой ссылки.
+function Get-KitOrphanArtifactFindings($Artifacts, [string]$Repo, [string]$Base) {
+    if (-not $Artifacts.Count) { return }
+    $refs = Get-KitArtifactHolders $Repo $Base
+    foreach ($key in @($Artifacts.Keys | Sort-Object)) {
+        $name = $Artifacts[$key]
+        $path = Join-Path (Join-Path $Repo $script:KitArtifactsDir) $name
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf) -or $refs.ContainsKey($key)) { continue }
+        New-KitFinding 'FAIL' (Get-KitRelativePath $Base (ConvertTo-KitPath $path)) 'после коммита на артефакт не ссылается ни один .md его репозитория — удалить его git rm тем же коммитом или сослаться на него'
     }
 }
 
-# Files — абсолютные пути. Удалённый файл не проверяется: чинить в нём уже нечего. Но
-# артефакты, на которые он ссылался, проверяются: закрытие задачи не оставляет файлов без ссылок.
-function Get-KitCommitFindings([string]$Base, [string]$Worktree, [string[]]$Files) {
+# Files — абсолютные пути; Repo — корень репозитория коммита: база или личный репозиторий
+# оператора. Удалённый файл не проверяется: чинить в нём уже нечего. Но артефакты, на которые
+# он ссылался, проверяются: закрытие задачи не оставляет файлов без ссылок.
+function Get-KitCommitFindings([string]$Base, [string]$Worktree, [string[]]$Files, [string]$Repo) {
     $Base = ConvertTo-KitPath $Base
+    $personal = Get-KitPersonalDir $Base
+    if ($Repo -and (ConvertTo-KitPath $Repo) -ieq $personal) {
+        Get-KitPersonalCommitFindings $Base $Worktree $Files
+        return
+    }
     $rules = Get-KitLayoutRules
-    $own = Get-KitWorkMemoryPath $Base $Worktree
+    $operator = Get-KitOperatorRoot $Base
+    $flowPrefix = $null
+    if ($operator) { $flowPrefix = (Get-KitRelativePath $Base $operator.dir) + '\' + $script:KitFlowDir + '\' }
 
     Get-KitGitFindings $Base
 
     $seen = @{}
     $flowTouched = $false
-    # Артефакты, которые коммит мог оставить без ссылок: положенные им и те, на которые в HEAD
-    # ссылались его .md.
     $artifacts = @{}
     foreach ($file in @($Files | Where-Object { $_ })) {
         $path = ConvertTo-KitPath $file
@@ -1430,19 +1512,13 @@ function Get-KitCommitFindings([string]$Base, [string]$Worktree, [string[]]$File
         $seen[$path.ToLowerInvariant()] = $true
         $rel = Get-KitRelativePath $Base $path
         # Удалённый этап ломает сценарий, который на него ссылается, поэтому сверку флоу
-        # запускает и удаление.
-        if ($rel -match "^$($script:KitFlowDir)\\") { $flowTouched = $true }
-        if ($rel -match '\.md$' -and $rel -notmatch '^local\\') {
-            $previous = & git -C $Base show "HEAD:$($rel.Replace([char]92, [char]47))" 2>$null
-            if ($LASTEXITCODE -eq 0 -and $previous) {
-                $was = Get-KitArtifactRefs (ConvertTo-KitMarkdown ($previous -join "`n"))
-                foreach ($key in $was.Keys) { $artifacts[$key] = $was[$key] }
-            }
-        }
+        # запускает и удаление. Чужой флоу сверка не судит.
+        if ($flowPrefix -and $rel.StartsWith($flowPrefix, [StringComparison]::OrdinalIgnoreCase)) { $flowTouched = $true }
+        if ($rel -notmatch '^local\\') { Add-KitFormerArtifactRefs $artifacts $Base $rel }
         if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { continue }
 
         if ($rel -match '^local\\') {
-            New-KitFinding 'FAIL' $rel 'файл из local/ в коммите — значения кредов и список копий машины в git базы не попадают'
+            New-KitFinding 'FAIL' $rel 'файл из local/ в коммите — значения кредов, файл машины и личный репозиторий в git базы не попадают'
             continue
         }
         if ($rel -match "^$($script:KitArtifactsDir)\\([^\\]+)$") {
@@ -1451,32 +1527,51 @@ function Get-KitCommitFindings([string]$Base, [string]$Worktree, [string[]]$File
         }
         if ($rel -notmatch '\\' -and $rel -match '\.md$') {
             if ($script:KitServedFiles -contains $rel) { Get-KitKnowledgeCeilingFindings $path $rel $rules }
-            elseif ($rel -ieq 'backlog.md') { Get-KitBacklogFindings $path $rel $rules }
         }
         elseif ($rel -match "^$($script:KitDecisionsDir)\\[^\\]+\.md$") {
             Get-KitDecisionFileFindings $path $rel $rules
         }
+        Find-KitSecrets $path $rel
+    }
+    if ($flowTouched) { Get-KitFlowFindings $Base $Worktree $rules }
+    Get-KitOrphanArtifactFindings $artifacts $Base $Base
+}
+
+# Коммит в личный репозиторий: бэклог, память и их артефакты. Подписи находок — от корня базы.
+function Get-KitPersonalCommitFindings([string]$Base, [string]$Worktree, [string[]]$Files) {
+    $rules = Get-KitLayoutRules
+    $personal = Get-KitPersonalDir $Base
+    $own = Get-KitWorkMemoryPath $personal $Worktree
+
+    $seen = @{}
+    $artifacts = @{}
+    foreach ($file in @($Files | Where-Object { $_ })) {
+        $path = ConvertTo-KitPath $file
+        if (-not $path.StartsWith($personal + '\', [StringComparison]::OrdinalIgnoreCase)) { continue }
+        if ($seen.ContainsKey($path.ToLowerInvariant())) { continue }
+        $seen[$path.ToLowerInvariant()] = $true
+        $rel = Get-KitRelativePath $personal $path
+        $label = Get-KitRelativePath $Base $path
+        Add-KitFormerArtifactRefs $artifacts $personal $rel
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { continue }
+
+        if ($rel -match "^$($script:KitArtifactsDir)\\([^\\]+)$") {
+            $artifacts[$Matches[1].ToLowerInvariant()] = $Matches[1]
+            Get-KitArtifactSizeFindings $path $label $rules
+        }
+        elseif ($rel -ieq 'backlog.md') { Get-KitBacklogFindings $path $label $rules }
         elseif ($rel -match '^work\\.+\.md$') {
             # Взятая запись ловится со стороны своей памяти: это коммит взятия. Со стороны
             # бэклога её не ищут — вырезать чужую запись коммит бэклога всё равно не может.
             if ($own -and $path -ieq $own) {
-                Get-KitOwnMemoryFindings $Base $path $rel $Worktree $rules
-                Get-KitAnsweredQuestionFindings $path $rel
-                Get-KitStepFindings $Base $path $rel
-                Get-KitTakenRecordFindings $Base $path $rel $Worktree
+                Get-KitOwnMemoryFindings $Base $path $label $Worktree $rules
+                Get-KitAnsweredQuestionFindings $path $label
+                Get-KitStepFindings $Base $path $label
+                Get-KitTakenRecordFindings $Base $path $label $Worktree
             }
-            else { New-KitFinding 'FAIL' $rel 'память другой рабочей копии в коммите — не своя, решает оператор' }
+            else { New-KitFinding 'FAIL' $label 'память другой рабочей копии в коммите — не своя, решает оператор' }
         }
-        Find-KitSecrets $path $rel
+        Find-KitSecrets $path $label
     }
-    if ($flowTouched) { Get-KitFlowFindings $Base $Worktree $rules }
-
-    if (-not $artifacts.Count) { return }
-    $refs = Get-KitArtifactHolders $Base
-    foreach ($key in @($artifacts.Keys | Sort-Object)) {
-        $name = $artifacts[$key]
-        $path = Join-Path (Join-Path $Base $script:KitArtifactsDir) $name
-        if (-not (Test-Path -LiteralPath $path -PathType Leaf) -or $refs.ContainsKey($key)) { continue }
-        New-KitFinding 'FAIL' "$($script:KitArtifactsDir)\$name" 'после коммита на артефакт не ссылается ни один .md базы — удалить его git rm тем же коммитом или сослаться на него'
-    }
+    Get-KitOrphanArtifactFindings $artifacts $personal $Base
 }

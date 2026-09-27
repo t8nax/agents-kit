@@ -67,9 +67,9 @@ $($lines -join "`n")
 # переименовании, а на постоянной ветке «файл есть» не значит «задача в работе».
 # Подаётся и отсутствие файла: адрес нужен сессии, которая память заведёт, а «файла нет» —
 # ответ «в работе ничего».
-function Read-KitWorkMemory([string]$BaseDir, [string]$Worktree) {
+function Read-KitWorkMemory([string]$PersonalDir, [string]$Worktree) {
     $worktree = $Worktree
-    $path = Get-KitWorkMemoryPath $BaseDir $worktree
+    $path = Get-KitWorkMemoryPath $PersonalDir $worktree
     if (-not $path) { return '' }
 
     $text = Read-KitMarkdown $path
@@ -124,7 +124,7 @@ function Read-KitBaseFindings([string]$BaseDir, [string]$Worktree) {
 
 ## Сверка базы
 
-**FAIL** — чинить до записи знания. **WARN** — перечитать и решить. Похожее на секрет и помеченное «решает оператор» не трогать, а назвать вопросом оператору. Находки в ``flow/`` у копии с задачей — тоже вопрос оператору: флоу правит ``/flow`` из копии без задачи.
+**FAIL** — чинить до записи знания. **WARN** — перечитать и решить. Похожее на секрет и помеченное «решает оператор» не трогать, а назвать вопросом оператору. Находки во флоу у копии с задачей — тоже вопрос оператору: флоу правит ``/flow`` из копии без задачи.
 
 $($lines -join "`n")
 "@
@@ -182,7 +182,7 @@ try {
 
 Основная копия ``$($state.workspace)``: $(Get-KitFormatProblem $state).
 
-**Работа со знанием остановлена до перевода.** Спросить оператора, переводить ли базу сейчас: перевод сам правит и коммитит файлы базы, и запускают его, когда другие сессии этого проекта закрыты. Согласен — запустить команду выше и показать её вывод. После перевода — новая сессия: ``/clear``.
+**Работа со знанием остановлена до перевода.** Спросить оператора, переводить ли базу сейчас: перевод сам правит и коммитит файлы базы, и запускают его, когда другие сессии этого проекта закрыты. В команде стоит ``<имя оператора>`` — тем же вопросом спросить его имя в базе по разделу «Оператор» раскладки базы ``$(ConvertTo-KitPath (Join-Path $PSScriptRoot '..\reference\base-layout.md'))`` и подставить. Согласен — запустить команду выше и показать её вывод. После перевода — новая сессия: ``/clear``.
 "@
         }
 
@@ -206,6 +206,28 @@ try {
 "@
         }
 
+        # Флоу, субагенты, память и бэклог — оператора: без его имени и личного репозитория
+        # сессия взяла бы чужой порядок работы или писала бы память мимо git.
+        'Unnamed' {
+            Emit @"
+# agents-kit — оператор на этой машине не назван
+
+База ``$($state.base)`` связана с ``$($state.workspace)``, но на этой машине не названо, чей это оператор: чьи флоу и субагенты брать и где память и бэклог, не опознать.
+
+**Работа со знанием остановлена.** Спросить оператора его имя в базе по разделу «Оператор» раскладки базы ``$(ConvertTo-KitPath (Join-Path $PSScriptRoot '..\reference\base-layout.md'))`` и завести: ``$(Get-KitOperatorCommand $state.base $null)``. После — новая сессия: ``/clear``.
+"@
+        }
+
+        'NoPersonal' {
+            Emit @"
+# agents-kit — нет личного репозитория
+
+Оператор этой машины — ``$($state.operator)``, но личного репозитория ``$($state.personal)`` нет: памяти задач и бэклогу негде жить.
+
+**Работа со знанием остановлена.** Завести его по разделу «Оператор» раскладки базы ``$(ConvertTo-KitPath (Join-Path $PSScriptRoot '..\reference\base-layout.md'))``: ``$(Get-KitOperatorCommand $state.base $state.operator)``. После — новая сессия: ``/clear``.
+"@
+        }
+
         'Linked' {
             $refDir = Join-Path $PSScriptRoot '..\reference'
             $invPath = Join-Path $refDir 'invariants.md'
@@ -217,7 +239,7 @@ try {
             $decisions = Read-KitDecisionIndex $state.base
             $findings = Read-KitBaseFindings $state.base $state.worktree
             # Память — последней: с неё сессия продолжает работу прямо сейчас.
-            $work = Read-KitWorkMemory $state.base $state.worktree
+            $work = Read-KitWorkMemory $state.personal $state.worktree
             # Справки подаются путём: правила файлов нужны только пишущей сессии, глоссарий —
             # только сессии, которой непонятно слово.
             $layoutLine = ''
@@ -240,6 +262,8 @@ try {
 # agents-kit — проект под китом
 
 $nameLine- База знаний: ``$($state.base)``
+- Оператор: ``$($state.operator)``, его флоу и субагенты — ``$($state.people)``
+- Личный репозиторий: ``$($state.personal)`` — бэклог, память задач и их артефакты
 - Рабочая копия: ``$($state.worktree)``$mainLine$repoLine$layoutLine
 
 Знание проекта живёт только в базе. Ниже — инварианты кита, они действуют всегда.

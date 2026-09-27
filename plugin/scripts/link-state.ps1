@@ -160,20 +160,50 @@ function Get-KitMachine {
 
 # Каталог памяти этой машины. Машина — каталогом, а не частью имени файла: имя машины
 # с дефисом неотличимо от начала слага пути, а каталог отделяет свою память от чужой целиком.
-function Get-KitMemoryDir([string]$BaseDir) {
+# Root — репозиторий, где лежит work\: личный репозиторий, а у шага перевода с прежнего
+# формата — сама база.
+function Get-KitMemoryDir([string]$Root) {
     $machine = Get-KitMachine
-    if (-not $BaseDir -or -not $machine) { return $null }
-    return ConvertTo-KitPath (Join-Path $BaseDir ('work\' + $machine))
+    if (-not $Root -or -not $machine) { return $null }
+    return ConvertTo-KitPath (Join-Path $Root ('work\' + $machine))
 }
 
 # Адрес памяти — каталог машины и слаг полного пути: одинаковые пути на двух машинах не делят
 # файл, одноимённые каталоги в разных родителях тоже; нижний регистр — NTFS его не различает.
 # Неоднозначность слага («a\b» и «a-b») ловит строка «рабочая копия» внутри файла.
-function Get-KitWorkMemoryPath([string]$BaseDir, [string]$Worktree) {
-    $dir = Get-KitMemoryDir $BaseDir
+function Get-KitWorkMemoryPath([string]$Root, [string]$Worktree) {
+    $dir = Get-KitMemoryDir $Root
     $slug = ConvertTo-KitSlug $Worktree
     if (-not $dir -or -not $slug) { return $null }
     return ConvertTo-KitPath (Join-Path $dir ($slug + '.md'))
+}
+
+# Личный репозиторий оператора — local\me базы, свой git: бэклог, память задач и их артефакты.
+# В local\, чтобы общая база его не видела: коллегам память и бэклог не нужны, а коммит памяти
+# на каждом шаге шёл бы в общий remote.
+function Get-KitPersonalDir([string]$BaseDir) {
+    if (-not $BaseDir) { return $null }
+    return ConvertTo-KitPath (Join-Path $BaseDir 'local\me')
+}
+
+# Личный репозиторий — корень своего git: без своего .git коммит памяти ушёл бы в общую базу,
+# где local\ игнорируется, и молча не случился бы. Смотрится .git, а не git: вызовы git — основное
+# время хука на старте каждой сессии.
+function Test-KitPersonalRepo([string]$BaseDir) {
+    $dir = Get-KitPersonalDir $BaseDir
+    return [bool]($dir -and (Test-Path -LiteralPath (Join-Path $dir '.git')))
+}
+
+# Имя оператора — латиница в нижнем регистре, цифры и дефис между ними: оно же имя его папки
+# в people\, и форма одна на любой диск и любой git.
+function Test-KitOperatorName([string]$Name) {
+    return [bool]($Name -and $Name -cmatch '^[a-z0-9]+(-[a-z0-9]+)*$')
+}
+
+# Папка оператора в общей базе — его флоу и субагенты.
+function Get-KitOperatorDir([string]$BaseDir, [string]$Name) {
+    if (-not $BaseDir -or -not (Test-KitOperatorName $Name)) { return $null }
+    return ConvertTo-KitPath (Join-Path $BaseDir ('people\' + $Name))
 }
 
 # Субагент базы, разложенный в рабочую копию: где лежит, чем спрятан от git проекта и что
@@ -299,20 +329,51 @@ function Get-KitMarker([string]$BaseDir) {
     return $marker
 }
 
-# Список копий — в local\ базы, вне git: пути копий у каждой машины свои, и общий файл
-# давал бы каждой машине висящие записи соседней.
+# Что эта машина знает о базе — local\me.json, вне git: список копий машины (workspaces) и имя
+# оператора (operator). Пути копий у каждой машины свои, и общий файл давал бы каждой машине
+# висящие записи соседней; имя — одно на машину и базу, как и личный репозиторий рядом.
 function Get-KitWorkspacesPath([string]$BaseDir) {
-    return (Join-Path $BaseDir 'local\workspaces.json')
+    return (Join-Path $BaseDir 'local\me.json')
 }
 
-# Список копий этой машины — объект с полем workspaces. Файла нет — пустой список; файл
-# не разбирается — $null: «копий нет» от «файл испорчен» отличает тот, кто его перепишет.
+# Файл машины — объект; кто пишет одно поле, переписывает его целиком и сохраняет другое.
+# Файла нет — пустой объект; файл не разбирается — $null: «пусто» от «файл испорчен» отличает
+# тот, кто его перепишет.
 function Get-KitWorkspaceList([string]$BaseDir) {
     $path = Get-KitWorkspacesPath $BaseDir
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return [pscustomobject]@{ workspaces = @() } }
     try { $list = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json } catch { return $null }
     if ($list -isnot [pscustomobject]) { return $null }
     return $list
+}
+
+function Save-KitWorkspaceList([string]$BaseDir, $List) {
+    $path = Get-KitWorkspacesPath $BaseDir
+    New-Item -ItemType Directory -Force -Path (Split-Path $path -Parent) | Out-Null
+    $List | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $path -Encoding utf8
+}
+
+# Имя оператора этой машины; не названо или не по форме — $null.
+function Get-KitOperatorName([string]$BaseDir) {
+    $list = Get-KitWorkspaceList $BaseDir
+    if (-not $list -or -not ($list.PSObject.Properties.Name -contains 'operator')) { return $null }
+    $name = [string]$list.operator
+    if (-not (Test-KitOperatorName $name)) { return $null }
+    return $name
+}
+
+# Имя пишется один раз на машину: другое имя поверх названного подменило бы, чьи флоу
+# и субагенты видит каждая копия этой машины.
+function Set-KitOperatorName([string]$BaseDir, [string]$Name) {
+    if (-not (Test-KitOperatorName $Name)) { throw "имя оператора «$Name» не по форме — латиница в нижнем регистре, цифры и дефис между ними: b-ignatyev" }
+    $list = Get-KitWorkspaceList $BaseDir
+    if (-not $list) { throw "$(Get-KitWorkspacesPath $BaseDir) не разбирается — разобраться должен оператор" }
+    $current = $null
+    if ($list.PSObject.Properties.Name -contains 'operator') { $current = [string]$list.operator }
+    if ($current -ceq $Name) { return }
+    if ($current) { throw "на этой машине оператор базы уже назван «$current» — другое имя поверх него не пишется" }
+    $list | Add-Member -NotePropertyName 'operator' -NotePropertyValue $Name -Force
+    Save-KitWorkspaceList $BaseDir $list
 }
 
 function Get-KitWorkspaces([string]$BaseDir) {
@@ -337,12 +398,15 @@ function Test-KitWorkspaceKnown([string]$BaseDir, [string]$Workspace) {
 #   Outdated    формат базы старше того, что ждёт кит, — перевести
 #   Newer       базу перевёл кит новее этого — обновить кит
 #   Unlisted    база есть, но на этой машине эту копию не числит своей
-#   Linked      обе стороны сошлись, формат тот, что ждёт кит
+#   Unnamed     на этой машине оператор базы не назван — чьи флоу и субагенты, не опознать
+#   NoPersonal  личного репозитория оператора на этой машине нет — памяти и бэклогу негде жить
+#   Linked      всё сошлось, формат тот, что ждёт кит
 function Get-KitLinkState([string]$Dir) {
     $state = [ordered]@{
         status = 'NotGit'; workspace = $null; worktree = $null
         repo = $null; scope = ''; base = $null; marker = $null
         format = $null; kitFormat = $null
+        operator = $null; personal = $null; people = $null
     }
 
     $roots = Get-KitRoots $Dir
@@ -370,8 +434,25 @@ function Get-KitLinkState([string]$Dir) {
     $state.status = 'Unlisted'
 
     if (-not (Test-KitWorkspaceKnown $state.base $state.workspace)) { return [pscustomobject]$state }
+    $state.status = 'Unnamed'
+
+    $state.operator = Get-KitOperatorName $state.base
+    if (-not $state.operator) { return [pscustomobject]$state }
+    $state.people = Get-KitOperatorDir $state.base $state.operator
+    $state.personal = Get-KitPersonalDir $state.base
+    $state.status = 'NoPersonal'
+
+    if (-not (Test-KitPersonalRepo $state.base)) { return [pscustomobject]$state }
     $state.status = 'Linked'
     return [pscustomobject]$state
+}
+
+# Команда, которой заводят место оператора на этой машине, — одна для хука, отчёта связи
+# и сверки: имя и личный репозиторий заводит base-init.ps1.
+function Get-KitOperatorCommand([string]$BaseDir, [string]$Name) {
+    $init = ConvertTo-KitPath (Join-Path $PSScriptRoot 'base-init.ps1')
+    if (-not $Name) { $Name = '<имя оператора>' }
+    return "pwsh -NoProfile -File `"$init`" -Path `"$BaseDir`" -Operator $Name"
 }
 
 # Что не так с форматом базы и что с этим делать — одной строкой для хука, гейта и скриптов.
@@ -379,7 +460,11 @@ function Get-KitLinkState([string]$Dir) {
 function Get-KitFormatProblem($State) {
     $migrate = ConvertTo-KitPath (Join-Path $PSScriptRoot 'base-migrate.ps1')
     switch ($State.status) {
-        'Outdated' { return "база «$($State.base)» формата $($State.format), а кит ждёт формат $($State.kitFormat) — перевести её: pwsh -NoProfile -File `"$migrate`" -Path `"$($State.worktree)`"" }
+        'Outdated' {
+            $operator = Get-KitOperatorName $State.base
+            if (-not $operator) { $operator = '<имя оператора>' }
+            return "база «$($State.base)» формата $($State.format), а кит ждёт формат $($State.kitFormat) — перевести её: pwsh -NoProfile -File `"$migrate`" -Path `"$($State.worktree)`" -Operator $operator"
+        }
         'Newer' { return "базу «$($State.base)» перевёл на формат $($State.format) кит новее этого, а этот знает формат до $($State.kitFormat) — обновить кит" }
     }
     return $null

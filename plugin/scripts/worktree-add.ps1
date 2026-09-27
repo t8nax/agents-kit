@@ -34,6 +34,7 @@ switch ($state.status) {
     'NoPointer' { throw "каталог «$($state.workspace)» под китом не числится — сначала взять его под кит скиллом /onboard" }
     'Linked'    { }
     { $_ -in 'Outdated', 'Newer' } { throw (Get-KitFormatProblem $state) }
+    { $_ -in 'Unnamed', 'NoPersonal' } { throw "места оператора на этой машине нет — завести: $(Get-KitOperatorCommand $state.base $state.operator)" }
     default    { throw "связь копии «$($state.workspace)» с базой разорвана — link.ps1 без аргументов покажет, что именно" }
 }
 
@@ -80,11 +81,11 @@ if ($state.scope) {
 }
 Write-Host "Связь с базой общая с основной копией «$($state.workspace)» — link.ps1 не нужен."
 
-# Субагенты базы довозятся сразу: до этого этап звал бы в новой копии исполнителя, которого
+# Субагенты оператора довозятся сразу: до этого этап звал бы в новой копии исполнителя, которого
 # в ней нет. Не вышло — копия всё равно заведена, и сказать об этом важнее, чем упасть.
 $copy = Join-KitScope $target $state.scope
 if (Test-Path -LiteralPath $copy -PathType Container) {
     Write-Host ''
     try { & (Join-Path $PSScriptRoot 'agents-deploy.ps1') -Path $copy }
-    catch { Write-Host "Субагентов базы довезти не удалось: $($_.Exception.Message) — прогнать agents-deploy.ps1 в копии" -ForegroundColor Yellow }
+    catch { Write-Host "Субагентов довезти не удалось: $($_.Exception.Message) — прогнать agents-deploy.ps1 в копии" -ForegroundColor Yellow }
 }

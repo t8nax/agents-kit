@@ -92,7 +92,7 @@ function ExpectText([string]$Dir, [string[]]$Needle, [string[]]$Lacks = @()) {
 # Адрес памяти берётся из того же текста, что видит сессия: он и есть контракт хука.
 function Find-HookMemoryPath([string]$Got) {
     if (-not $Got) { return $null }
-    $m = [regex]::Match($Got, '`([^`]+\\work\\[^`]+\.md)`')
+    $m = [regex]::Match($Got, '`([A-Za-z]:\\[^`]*\\work\\[^`]+\.md)`')
     if (-not $m.Success) { return $null }
     return $m.Groups[1].Value
 }
@@ -145,11 +145,25 @@ function Invoke-WorktreeRemove([string]$Dir) {
     return [pscustomobject]@{ code = $LASTEXITCODE; text = ($out -join "`n") }
 }
 
-function Invoke-BaseInit([string]$Dir, [string]$Prefix = 'ORD') {
-    $callArgs = @('-NoProfile', '-File', $init, '-Path', $Dir)
+# Оператор стенда — один на все базы, кроме проверок, которые сами называют другого.
+$script:op = 'op'
+
+function Invoke-BaseInit([string]$Dir, [string]$Prefix = 'ORD', [string]$Operator = $script:op, [string]$Remote, [string]$Script = $init) {
+    $callArgs = @('-NoProfile', '-File', $Script, '-Path', $Dir)
+    if ($Operator) { $callArgs += @('-Operator', $Operator) }
     if ($Prefix) { $callArgs += @('-Prefix', $Prefix) }
+    if ($Remote) { $callArgs += @('-Remote', $Remote) }
     $out = & pwsh @callArgs 2>&1
     return [pscustomobject]@{ code = $LASTEXITCODE; text = ($out -join "`n") }
+}
+
+# Папка оператора стенда и личный репозиторий в базе.
+function Get-OpDir([string]$Base) { return (Join-Path $Base "people\$script:op") }
+function Get-MeDir([string]$Base) { return (Join-Path $Base 'local\me') }
+
+function Commit-All([string]$Repo, [string]$Message) {
+    & git -C $Repo add -A 2>$null
+    & git -C $Repo commit -qm $Message | Out-Null
 }
 
 function Invoke-AgentsDeploy([string]$Dir) {
@@ -157,8 +171,10 @@ function Invoke-AgentsDeploy([string]$Dir) {
     return [pscustomobject]@{ code = $LASTEXITCODE; text = ($out -join "`n") }
 }
 
-function Invoke-BaseMigrate([string]$Script, [string]$Dir) {
-    $out = & pwsh -NoProfile -File $Script -Path $Dir 2>&1
+function Invoke-BaseMigrate([string]$Script, [string]$Dir, [string]$Operator = $script:op) {
+    $callArgs = @('-NoProfile', '-File', $Script, '-Path', $Dir)
+    if ($Operator) { $callArgs += @('-Operator', $Operator) }
+    $out = & pwsh @callArgs 2>&1
     return [pscustomobject]@{ code = $LASTEXITCODE; text = ($out -join "`n") }
 }
 
@@ -265,27 +281,51 @@ try {
         return $null
     }
 
-    Check 'база заведена — каркас, репозиторий и коммит' {
+    Check 'база заведена — каркас, папка оператора, личный репозиторий и коммиты' {
         $r = Invoke-BaseInit $base
         if ($r.code -ne 0) { return "код возврата $($r.code): $($r.text)" }
-        foreach ($f in 'product.md', 'boundaries.md', 'flow\scenarios.md', 'backlog.md', '.gitignore') {
+        foreach ($f in 'product.md', 'boundaries.md', '.gitignore', 'agents-kit.json', "people\$script:op\flow\scenarios.md", 'local\me\backlog.md', 'local\me.json') {
             if (-not (Test-Path -LiteralPath (Join-Path $base $f) -PathType Leaf)) { return "нет файла $f" }
         }
-        if (-not (Test-Path -LiteralPath (Join-Path $base '.git') -PathType Container)) { return 'нет репозитория базы' }
-        & git -C $base rev-parse --verify HEAD 2>$null | Out-Null
-        if ($LASTEXITCODE -ne 0) { return 'каркас не закоммичен' }
+        foreach ($f in 'backlog.md', 'flow') {
+            if (Test-Path -LiteralPath (Join-Path $base $f)) { return "в корне базы лежит $f — ему место не там" }
+        }
+        foreach ($r2 in $base, (Get-MeDir $base)) {
+            if (-not (Test-Path -LiteralPath (Join-Path $r2 '.git') -PathType Container)) { return "нет репозитория в $r2" }
+            & git -C $r2 rev-parse --verify HEAD 2>$null | Out-Null
+            if ($LASTEXITCODE -ne 0) { return "каркас не закоммичен в $r2" }
+        }
+        if ((Get-Content -LiteralPath (Join-Path $base 'local\me.json') -Raw | ConvertFrom-Json).operator -ne $script:op) { return 'имя оператора не записано' }
         return $null
     }
 
     # Повторным прогоном база обновляется; ошибка здесь стоит заполненной базы.
     Check 'повторный прогон — заполненное не тронуто, отсутствующее довезено' {
         $product = Join-Path $base 'product.md'
+        $backlog = Join-Path (Get-MeDir $base) 'backlog.md'
         Set-Content -LiteralPath $product -Value 'заполнено человеком' -Encoding utf8
-        Remove-Item -LiteralPath (Join-Path $base 'backlog.md') -Force
-        $r = Invoke-BaseInit $base
+        Remove-Item -LiteralPath $backlog -Force
+        $r = Invoke-BaseInit $base ''
         if ($r.code -ne 0) { return "код возврата $($r.code): $($r.text)" }
         if ((Get-Content -LiteralPath $product -Raw).Trim() -ne 'заполнено человеком') { return 'product.md перезаписан' }
-        if (-not (Test-Path -LiteralPath (Join-Path $base 'backlog.md') -PathType Leaf)) { return 'backlog.md не довезён' }
+        if (-not (Test-Path -LiteralPath $backlog -PathType Leaf)) { return 'бэклог не довезён' }
+        if ((Get-Content -LiteralPath $backlog -Raw) -notmatch 'ORD-1') { return 'довезённый бэклог без букв базы' }
+        return $null
+    }
+
+    # Имя оператора — одно на машину: второе поверх подменило бы, чьи флоу и субагенты видит копия.
+    Check 'другое имя оператора на той же машине — отказ' {
+        $r = Invoke-BaseInit $base '' 'other'
+        if ($r.code -eq 0) { return 'скрипт не отказал' }
+        if ($r.text -notmatch 'уже назван «op»') { return "отказ не про имя: $($r.text)" }
+        if (Test-Path -LiteralPath (Join-Path $base 'people\other')) { return 'папка другого оператора всё-таки заведена' }
+        return $null
+    }
+
+    Check 'имя оператора не по форме — отказ' {
+        $r = Invoke-BaseInit $basePfx 'ORD' 'B.Ignatyev'
+        if ($r.code -eq 0) { return 'скрипт не отказал' }
+        if (Test-Path -LiteralPath $basePfx) { return 'каталог базы всё-таки создан' }
         return $null
     }
 
@@ -294,15 +334,53 @@ try {
     Check 'заведение без букв номеров — отказ, каркас не тронут' {
         $r = Invoke-BaseInit $basePfx ''
         if ($r.code -eq 0) { return 'скрипт не отказал' }
-        if (Test-Path -LiteralPath (Join-Path $basePfx 'backlog.md')) { return 'backlog.md всё-таки заведён' }
+        if (Test-Path -LiteralPath $basePfx) { return 'каталог базы всё-таки создан' }
         return $null
     }
 
-    Check 'буквы номеров встали в счётчик бэклога' {
+    Check 'буквы номеров встали в agents-kit.json и в счётчик бэклога' {
         $r = Invoke-BaseInit $basePfx 'ord'
         if ($r.code -ne 0) { return "код возврата $($r.code): $($r.text)" }
-        $text = Get-Content -LiteralPath (Join-Path $basePfx 'backlog.md') -Raw
+        $text = Get-Content -LiteralPath (Join-Path (Get-MeDir $basePfx) 'backlog.md') -Raw
         if ($text -notmatch '(?m)^следующий номер: ORD-1\s*$') { return "в счётчике не «ORD-1»: $text" }
+        if ((Get-Content -LiteralPath (Join-Path $basePfx 'agents-kit.json') -Raw | ConvertFrom-Json).prefix -cne 'ORD') { return 'в agents-kit.json нет букв ORD' }
+        return $null
+    }
+
+    # Имя занято тем, что папку видят коллеги: в базе с историей новая папка оператора коммитится сразу.
+    Check 'новый оператор в базе с коммитами — его папка закоммичена' {
+        $mePath = Join-Path $basePfx 'local\me.json'
+        $saved = Get-Content -LiteralPath $mePath -Raw
+        $m = $saved | ConvertFrom-Json
+        $m.PSObject.Properties.Remove('operator')
+        $m | ConvertTo-Json | Set-Content -LiteralPath $mePath -Encoding utf8
+        try {
+            $r = Invoke-BaseInit $basePfx '' 'second'
+            if ($r.code -ne 0) { return "код возврата $($r.code): $($r.text)" }
+            $log = @(& git -C $basePfx log --oneline -- 'people/second' 2>$null | Where-Object { $_ })
+            if (-not $log.Count) { return 'папка оператора не закоммичена' }
+            $dirty = @(& git -C $basePfx status --porcelain | Where-Object { $_ })
+            if ($dirty.Count) { return "в базе осталось незакоммиченное: $($dirty -join '; ')" }
+            return $null
+        }
+        finally { Set-Content -LiteralPath $mePath -Value $saved -Encoding utf8 -NoNewline }
+    }
+
+    # Второй оператор на своей машине: личный репозиторий с приватным remote приезжает клоном,
+    # а занятую папку оператора скрипт не переписывает.
+    Check 'личный репозиторий с -Remote — клон; папка оператора уже есть — не тронута' {
+        $remote = Join-Path $root 'me-remote.git'
+        & git clone -q --bare (Get-MeDir $basePfx) $remote 2>$null
+        $baseRemote = Join-Path $root 'base-remote'
+        $taken = Join-Path $baseRemote "people\$script:op\flow\scenarios.md"
+        New-Item -ItemType Directory -Force -Path (Split-Path $taken -Parent) | Out-Null
+        Set-Content -LiteralPath $taken -Value 'сценарии оператора' -Encoding utf8
+        $r = Invoke-BaseInit $baseRemote 'ORD' $script:op $remote
+        if ($r.code -ne 0) { return "код возврата $($r.code): $($r.text)" }
+        $origin = & git -C (Get-MeDir $baseRemote) remote get-url origin 2>$null
+        if (-not $origin -or ([System.IO.Path]::GetFullPath($origin)).TrimEnd('\') -ine ([System.IO.Path]::GetFullPath($remote)).TrimEnd('\')) { return "origin личного репозитория «$origin», ожидался «$remote»" }
+        if ((Get-Content -LiteralPath $taken -Raw).Trim() -ne 'сценарии оператора') { return 'папка оператора переписана' }
+        if ($r.text -notmatch 'взята как есть') { return 'скрипт не сказал, что папка оператора уже есть' }
         return $null
     }
 
@@ -339,8 +417,8 @@ try {
 
     # Флоу нужен только /flow и /drive, и в каждую сессию он не приезжает.
     Check 'сценарии и этапы базы — в контекст не попадают' {
-        $flow = Join-Path $base 'flow\scenarios.md'
-        $stages = Join-Path $base 'flow\stages'
+        $flow = Join-Path (Get-OpDir $base) 'flow\scenarios.md'
+        $stages = Join-Path (Get-OpDir $base) 'flow\stages'
         $saved = Get-Content -LiteralPath $flow -Raw
         New-Item -ItemType Directory -Force -Path $stages | Out-Null
         Set-Content -LiteralPath $flow -Encoding utf8 -Value '# Сценарии', '', '## Метка сценария вне подачи', '1. [Ветка](stages/branch.md)'
@@ -354,7 +432,7 @@ try {
 
     # Пункт сценария адресует этап файлом: оборванная ссылка оставила бы сценарий без этапа молча.
     Check 'сценарий ведёт на файл этапа, которого нет, — сверка называет' {
-        $flow = Join-Path $base 'flow\scenarios.md'
+        $flow = Join-Path (Get-OpDir $base) 'flow\scenarios.md'
         $saved = Get-Content -LiteralPath $flow -Raw
         Set-Content -LiteralPath $flow -Encoding utf8 -Value '# Сценарии', '', '## полный', '1. [Ветка](stages/branch.md)'
         $problem = ExpectText $repo 'такого файла нет'
@@ -365,8 +443,8 @@ try {
     # Возврат пишет сценарий: один этап «Ревью» возвращает в каждом сценарии на своё. Лишний этап
     # вне сценариев показывает, что сверка флоу дошла до подачи.
     Check 'возврат под пунктом сценария на этап раньше — сверка проходит' {
-        $flow = Join-Path $base 'flow\scenarios.md'
-        $stages = Join-Path $base 'flow\stages'
+        $flow = Join-Path (Get-OpDir $base) 'flow\scenarios.md'
+        $stages = Join-Path (Get-OpDir $base) 'flow\stages'
         $saved = Get-Content -LiteralPath $flow -Raw
         New-Item -ItemType Directory -Force -Path $stages | Out-Null
         Set-Content -LiteralPath $flow -Encoding utf8 -Value '# Сценарии', '',
@@ -383,8 +461,8 @@ try {
     }
 
     Check 'возврат на этап, которого нет в этом сценарии, — сверка называет' {
-        $flow = Join-Path $base 'flow\scenarios.md'
-        $stages = Join-Path $base 'flow\stages'
+        $flow = Join-Path (Get-OpDir $base) 'flow\scenarios.md'
+        $stages = Join-Path (Get-OpDir $base) 'flow\stages'
         $saved = Get-Content -LiteralPath $flow -Raw
         New-Item -ItemType Directory -Force -Path $stages | Out-Null
         Set-Content -LiteralPath $flow -Encoding utf8 -Value '# Сценарии', '',
@@ -418,7 +496,7 @@ try {
     # Один пропавший файл не должен уносить с собой подачу остальных. Этим же ответом хука
     # назван адрес памяти, которой ещё нет.
     Remove-Item -LiteralPath (Join-Path $base 'boundaries.md') -Force
-    New-Item -ItemType Directory -Force -Path (Join-Path $base 'work') | Out-Null
+    New-Item -ItemType Directory -Force -Path (Join-Path (Get-MeDir $base) 'work') | Out-Null
     $noMemory = Invoke-Hook $repo
     Check 'файла базы нет — подача остального цела' { Test-HookText $noMemory 'сверка остатков идёт ночным прогоном' }
 
@@ -478,8 +556,8 @@ try {
     New-TestRepo $renRepo
     Invoke-BaseInit $renBase | Out-Null
     & pwsh -NoProfile -File $link -Path $renRepo -Base $renBase | Out-Null
-    $renFlow = Join-Path $renBase 'flow\scenarios.md'
-    $renStages = Join-Path $renBase 'flow\stages'
+    $renFlow = Join-Path (Get-OpDir $renBase) 'flow\scenarios.md'
+    $renStages = Join-Path (Get-OpDir $renBase) 'flow\stages'
     New-Item -ItemType Directory -Force -Path $renStages | Out-Null
     foreach ($s in @(@('impl', 'Реализация'), @('review', 'Ревью'), @('writing', 'Написание'))) {
         Set-Content -LiteralPath (Join-Path $renStages "$($s[0]).md") -Encoding utf8 `
@@ -499,9 +577,10 @@ try {
     }
     Set-Content -LiteralPath $renFlow -Encoding utf8 -Value (@('# Сценарии', '') + $renFull + $renDocs)
     & $renMemory 'полный'
-    & git -C $renBase add -A 2>$null
-    & git -C $renBase commit -qm 'задача взята' | Out-Null
-    $renCommit = "git -C `"$renBase`" commit -m память -- `"$renFlow`" `"$renMem`""
+    $renMe = Get-MeDir $renBase
+    Commit-All $renBase 'флоу'
+    Commit-All $renMe 'задача взята'
+    $renCommit = "git -C `"$renMe`" commit -m память -- `"$renMem`""
 
     Check 'сценария памяти нет, этапы те же у одного сценария — сверка называет его' {
         Set-Content -LiteralPath $renFlow -Encoding utf8 -Value (@('# Сценарии', '') + $renFeature + $renDocs)
@@ -563,8 +642,8 @@ try {
     # Пропажа и возврат раздела этапов меняют отметки, но переходом не считаются.
     Check 'коммит памяти: заголовок «Сценарий» стёрт, шаги уцелели — не переход' {
         & $renMemory 'полный'
-        & git -C $renBase add -A 2>$null
-        & git -C $renBase commit -qm 'сценарий памяти' | Out-Null
+        & git -C $renMe add -A 2>$null
+        & git -C $renMe commit -qm 'сценарий памяти' | Out-Null
         Set-Content -LiteralPath $renMem -Encoding utf8 -Value $renNoFlow
         $reason = Invoke-CommitGate $renRepo $renCommit
         if ($reason -match 'прежнего этапа') { return "гейт принял пропажу за переход: $reason" }
@@ -573,8 +652,8 @@ try {
     }
 
     Check 'коммит памяти: заголовок «Сценарий» вернули — не переход' {
-        & git -C $renBase add -A 2>$null
-        & git -C $renBase commit -qm 'заголовок потерян' | Out-Null
+        & git -C $renMe add -A 2>$null
+        & git -C $renMe commit -qm 'заголовок потерян' | Out-Null
         & $renMemory 'полный'
         $reason = Invoke-CommitGate $renRepo $renCommit
         if ($reason -match 'прежнего этапа') { return "гейт принял возврат заголовка за переход: $reason" }
@@ -583,8 +662,8 @@ try {
 
     Check 'коммит памяти: заголовок «Шаги» вернули над закрытым шагом — не новые шаги' {
         Set-Content -LiteralPath $renMem -Encoding utf8 -Value ($renHead + @('### Сценарий') + $renStageLines + @('- [ ] дочитать формат позиции'))
-        & git -C $renBase add -A 2>$null
-        & git -C $renBase commit -qm 'заголовок шагов потерян' | Out-Null
+        & git -C $renMe add -A 2>$null
+        & git -C $renMe commit -qm 'заголовок шагов потерян' | Out-Null
         Set-Content -LiteralPath $renMem -Encoding utf8 -Value ($renHead + @('### Сценарий') + $renStageLines +
             @('### Шаги', '- [x] дочитать формат позиции — результат: формат в a.txt — проверен: прочитан файл'))
         $reason = Invoke-CommitGate $renRepo $renCommit
@@ -592,26 +671,60 @@ try {
         return $null
     }
 
-    # Артефакты: файл живёт, пока на него ссылается .md базы. Своя база — закрытие задачи
+    # Память живёт в личном репозитории, и гейт судит коммит туда так же, как коммит в базу.
+    Check 'коммит в личный репозиторий с невобранным ответом — гейт останавливает' {
+        & $renMemory 'полный'
+        Add-Content -LiteralPath $renMem -Encoding utf8 -Value '', '## Оператору', '', '### Какой стенд дать?', 'Стенд нужен под сверку.', '', 'ответ: общий'
+        $reason = Invoke-CommitGate $renRepo $renCommit
+        & $renMemory 'полный'
+        if ($reason -notmatch 'ответ не вобран') { return "гейт не остановил: «$reason»" }
+        return $null
+    }
+
+    # Папка коллеги — его работа: ни сверка, ни гейт её не судят.
+    $renAlien = Join-Path $renBase 'people\x\flow\scenarios.md'
+    New-Item -ItemType Directory -Force -Path (Split-Path $renAlien -Parent) | Out-Null
+    Set-Content -LiteralPath $renAlien -Encoding utf8 -Value '# Сценарии', '', '## чужой', '1. [Нет такого](stages/none.md)'
+
+    Check 'флоу в папке другого оператора — сверка молчит, гейт коммита в базу пускает' {
+        $problem = ExpectNoText $renRepo 'people/x', 'stages/none.md'
+        if ($problem) { return $problem }
+        $reason = Invoke-CommitGate $renRepo "git -C `"$renBase`" commit -m чужой -- `"$renAlien`""
+        if ($reason) { return "гейт остановил: $reason" }
+        return $null
+    }
+
+    Check 'флоу в своей папке с той же ошибкой — гейт коммита в базу останавливает' {
+        $own = Join-Path (Get-OpDir $renBase) 'flow\scenarios.md'
+        $saved = Get-Content -LiteralPath $own -Raw
+        Set-Content -LiteralPath $own -Encoding utf8 -Value '# Сценарии', '', '## свой', '1. [Нет такого](stages/none.md)'
+        $reason = Invoke-CommitGate $renRepo "git -C `"$renBase`" commit -m свой -- `"$own`""
+        Set-Content -LiteralPath $own -Encoding utf8 -Value $saved -NoNewline
+        if ($reason -notmatch 'такого файла нет') { return "гейт не остановил: «$reason»" }
+        return $null
+    }
+
+    # Артефакты: файл живёт, пока на него ссылается .md его репозитория. Своя база — закрытие задачи
     # коммитом гейт судит по HEAD, и чужие коммиты стенда его сдвигали бы.
     New-TestRepo $artRepo
     Invoke-BaseInit $artBase | Out-Null
     & pwsh -NoProfile -File $link -Path $artRepo -Base $artBase | Out-Null
-    $artDir = Join-Path $artBase 'artifacts'
+    $artMe = Get-MeDir $artBase
+    $artDir = Join-Path $artMe 'artifacts'
     $artFile = Join-Path $artDir 'ORD-1-макет.png'
     $artMem = Get-HookMemoryPath $artRepo
-    $artBacklog = Join-Path $artBase 'backlog.md'
+    $artBacklog = Join-Path $artMe 'backlog.md'
     $artBacklogSaved = Get-Content -LiteralPath $artBacklog -Raw
     New-Item -ItemType Directory -Force -Path $artDir | Out-Null
     Set-Content -LiteralPath $artFile -Value 'png'
     Set-KitMemory $artMem $artRepo 'сверить макет'
     Add-Content -LiteralPath $artMem -Encoding utf8 -Value '', '## Артефакты', '- макет: artifacts/ORD-1-макет.png.'
-    & git -C $artBase add -A 2>$null
-    & git -C $artBase commit -qm 'задача с артефактом' | Out-Null
+    & git -C $artMe add -A 2>$null
+    & git -C $artMe commit -qm 'задача с артефактом' | Out-Null
     $artHook = Invoke-Hook $artRepo
 
     Check 'артефакт со ссылкой из памяти — сверка молчит о нём' {
-        return Test-HookText $artHook -Lacks 'ORD-1-макет.png` —', 'такого файла в базе нет'
+        return Test-HookText $artHook -Lacks 'ORD-1-макет.png` —', 'такого файла в его репозитории нет'
     }
 
     Check 'на артефакт никто не ссылается — сверка называет' {
@@ -626,8 +739,20 @@ try {
         $decision = Join-Path $artBase 'decisions\build.md'
         Set-Content -LiteralPath $decision -Encoding utf8 -Value '# Сборка', 'когда: правка сборки', '',
             '## Выход', '- сборка кладёт пакет в build/artifacts/pkg.zip', '- схема сборки — artifacts/схема.svg'
-        $problem = ExpectText $artRepo 'artifacts/схема.svg — такого файла в базе нет' -Lacks 'artifacts/pkg.zip'
+        $problem = ExpectText $artRepo 'artifacts/схема.svg — такого файла в его репозитории нет' -Lacks 'artifacts/pkg.zip'
         Remove-Item -LiteralPath (Join-Path $artBase 'decisions') -Recurse -Force
+        return $problem
+    }
+
+    # Артефакты у каждого репозитория свои: коллеги память не видят, и её ссылка файл базы не держит.
+    Check 'артефакт общей базы, на который ссылается только память, — без ссылок' {
+        $shared = Join-Path $artBase 'artifacts\общий.png'
+        New-Item -ItemType Directory -Force -Path (Split-Path $shared -Parent) | Out-Null
+        Set-Content -LiteralPath $shared -Value 'png'
+        Add-Content -LiteralPath $artMem -Encoding utf8 -Value '- общий: artifacts/общий.png'
+        $problem = ExpectText $artRepo 'artifacts\общий.png` — на артефакт не ссылается'
+        Remove-Item -LiteralPath (Split-Path $shared -Parent) -Recurse -Force
+        & git -C $artMe checkout -q -- $artMem 2>$null
         return $problem
     }
 
@@ -645,26 +770,26 @@ try {
         Add-Content -LiteralPath $artMem -Encoding utf8 -Value '- дамп: artifacts/дамп.bin'
         $problem = ExpectText $artRepo 'при потолке 5 МБ'
         if (-not $problem) {
-            $reason = Invoke-CommitGate $artRepo "git -C `"$artBase`" commit -m x -- `"$big`" `"$artMem`""
+            $reason = Invoke-CommitGate $artRepo "git -C `"$artMe`" commit -m x -- `"$big`" `"$artMem`""
             if ($reason -notmatch 'при потолке 5 МБ') { $problem = "гейт не остановил: «$reason»" }
         }
         Remove-Item -LiteralPath $big -Force
-        & git -C $artBase checkout -q -- $artMem 2>$null
+        & git -C $artMe checkout -q -- $artMem 2>$null
         return $problem
     }
 
     Check 'закрытие задачи оставляет артефакт без ссылок — гейт останавливает' {
-        & git -C $artBase rm -q -- $artMem
-        $reason = Invoke-CommitGate $artRepo "git -C `"$artBase`" commit -m закрыта -- `"$artMem`""
+        & git -C $artMe rm -q -- $artMem
+        $reason = Invoke-CommitGate $artRepo "git -C `"$artMe`" commit -m закрыта -- `"$artMem`""
         if ($reason -notmatch 'ORD-1-макет.png` — после коммита на артефакт не ссылается') { return "гейт не остановил: «$reason»" }
         return $null
     }
 
     Check 'закрытие задачи вместе с git rm артефакта — гейт пускает' {
-        & git -C $artBase rm -q -- $artFile
-        $reason = Invoke-CommitGate $artRepo "git -C `"$artBase`" commit -m закрыта -- `"$artMem`" `"$artFile`""
-        & git -C $artBase reset -q HEAD -- $artMem $artFile 2>$null
-        & git -C $artBase checkout -q -- $artMem $artFile 2>$null
+        & git -C $artMe rm -q -- $artFile
+        $reason = Invoke-CommitGate $artRepo "git -C `"$artMe`" commit -m закрыта -- `"$artMem`" `"$artFile`""
+        & git -C $artMe reset -q HEAD -- $artMem $artFile 2>$null
+        & git -C $artMe checkout -q -- $artMem $artFile 2>$null
         if ($reason -match 'после коммита на артефакт') { return "гейт остановил: $reason" }
         return $null
     }
@@ -672,10 +797,10 @@ try {
     Check 'закрытие задачи, артефакт держит запись бэклога — гейт пускает' {
         Add-Content -LiteralPath $artBacklog -Encoding utf8 -Value '', '## ORD-1 сверить с макетом через месяц', '', 'Сравнить экран с макетом.', '',
             '### Артефакты', '- макет: artifacts/ORD-1-макет.png'
-        & git -C $artBase rm -q -- $artMem
-        $reason = Invoke-CommitGate $artRepo "git -C `"$artBase`" commit -m закрыта -- `"$artMem`" `"$artBacklog`""
-        & git -C $artBase reset -q HEAD -- $artMem 2>$null
-        & git -C $artBase checkout -q -- $artMem 2>$null
+        & git -C $artMe rm -q -- $artMem
+        $reason = Invoke-CommitGate $artRepo "git -C `"$artMe`" commit -m закрыта -- `"$artMem`" `"$artBacklog`""
+        & git -C $artMe reset -q HEAD -- $artMem 2>$null
+        & git -C $artMe checkout -q -- $artMem 2>$null
         Set-Content -LiteralPath $artBacklog -Encoding utf8 -Value $artBacklogSaved -NoNewline
         if ($reason -match 'после коммита на артефакт') { return "гейт остановил: $reason" }
         return $null
@@ -686,14 +811,15 @@ try {
     Check 'копия каталога вместе с .git — отчёт link.ps1 красный' { ExpectLinkReport $copy 1 'связь односторонняя' }
 
     # Поле, которого в схеме нет, переживает добавление копии.
-    Check 'добавление копии — прочие поля списка копий целы' {
-        $listPath = Join-Path $base 'local\workspaces.json'
+    Check 'добавление копии — прочие поля файла машины целы' {
+        $listPath = Join-Path $base 'local\me.json'
         $m = Get-Content -LiteralPath $listPath -Raw | ConvertFrom-Json
         $m | Add-Member -NotePropertyName 'note' -NotePropertyValue 'поле будущей версии' -Force
         $m | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $listPath -Encoding utf8
         & pwsh -NoProfile -File $link -Path $copy -Base $base | Out-Null
         $after = Get-Content -LiteralPath $listPath -Raw | ConvertFrom-Json
         if ($after.note -ne 'поле будущей версии') { return 'поле note потеряно' }
+        if ($after.operator -ne $script:op) { return 'имя оператора потеряно' }
         if (@($after.workspaces).Count -ne 2) { return "копий в списке $(@($after.workspaces).Count), ожидалось 2" }
         return $null
     }
@@ -714,7 +840,7 @@ try {
     }
 
     Check 'файл прямо в work/ — сверка называет, содержимое не подано' {
-        $stray = Join-Path $base 'work\stray.md'
+        $stray = Join-Path (Get-MeDir $base) 'work\stray.md'
         Set-KitMemory $stray $repo 'память вне каталога машины'
         $problem = ExpectText $repo 'вне каталога машины' -Lacks 'память вне каталога машины'
         Remove-Item -LiteralPath $stray -Force
@@ -723,7 +849,7 @@ try {
 
     # Вторая машина с тем же путём копии: стенд подменяет имя машины, а её пустой local\ —
     # отложив в сторону список копий первой.
-    $listPath = Join-Path $base 'local\workspaces.json'
+    $listPath = Join-Path $base 'local\me.json'
     $listSaved = Get-Content -LiteralPath $listPath -Raw
     $firstMachineDir = 'work\' + (Split-Path (Split-Path $script:memRepo -Parent) -Leaf) + '\'
     $machineSaved = $env:COMPUTERNAME
@@ -732,6 +858,9 @@ try {
     try {
         Check 'вторая машина — копию не числит, остановка' { ExpectText $repo 'на этой машине она не числит' }
         & pwsh -NoProfile -File $link -Path $repo -Base $base | Out-Null
+        Check 'вторая машина — оператор не назван, остановка' { ExpectText $repo 'оператор на этой машине не назван' }
+        Check 'вторая машина — оператор не назван, отчёт link.ps1 красный' { ExpectLinkReport $repo 1 'на этой машине не назван' }
+        Invoke-BaseInit $base '' | Out-Null
         $second = Invoke-Hook $repo
         Check 'вторая машина, тот же путь копии — адрес памяти свой, память первой не подана' {
             $mem = Find-HookMemoryPath $second
@@ -747,6 +876,15 @@ try {
         $env:COMPUTERNAME = $machineSaved
         Set-Content -LiteralPath $listPath -Value $listSaved -Encoding utf8 -NoNewline
     }
+
+    # Имя названо, а личного репозитория на машине нет — памяти и бэклогу негде жить.
+    $meAway = Join-Path $root 'me-away'
+    Move-Item -LiteralPath (Get-MeDir $base) -Destination $meAway
+    try {
+        Check 'личного репозитория нет — остановка' { ExpectText $repo 'нет личного репозитория' -Lacks 'Три слоя' }
+        Check 'личного репозитория нет — отчёт link.ps1 красный' { ExpectLinkReport $repo 1 'личного репозитория на этой машине нет' }
+    }
+    finally { Move-Item -LiteralPath $meAway -Destination (Get-MeDir $base) }
 
     & git -C $repo worktree add -q $wt -b wt 2>$null
     $wtFresh = Invoke-Hook $wt
@@ -886,7 +1024,7 @@ try {
 
     # В списке копий — каталог, для которого записан указатель, а не корень репозитория.
     Check 'связь по каталогу — база числит каталог, а не репозиторий' {
-        $m = Get-Content -LiteralPath (Join-Path $baseFoo 'local\workspaces.json') -Raw | ConvertFrom-Json
+        $m = Get-Content -LiteralPath (Join-Path $baseFoo 'local\me.json') -Raw | ConvertFrom-Json
         $ws = @($m.workspaces)
         if ($ws.Count -ne 1) { return "копий в списке $($ws.Count), ожидалась одна" }
         if ($ws[0] -ine $modFoo) { return "числится «$($ws[0])», ожидался «$modFoo»" }
@@ -932,18 +1070,23 @@ try {
         ExpectLinkReport $mono 0 'packages/foo'
     }
 
-    # Субагенты базы: гоняется настоящий скрипт раскладки. Проверяется то, чем раскладка
+    # Субагенты оператора: гоняется настоящий скрипт раскладки. Проверяется то, чем раскладка
     # отличается от копирования файла, — git проекта её не видит, база верна, чужое не тронуто.
-    $agentsDir = Join-Path $base 'agents'
+    $agentsDir = Join-Path (Get-OpDir $base) 'agents'
     $copyAgents = Join-Path (Join-Path $repo '.claude') 'agents'
     New-Item -ItemType Directory -Force -Path $agentsDir | Out-Null
     $scout = Join-Path $agentsDir 'scout.md'
     $scoutLines = @('---', 'name: scout', 'description: "разведчик"', '---', '', 'разведать')
     Set-Content -LiteralPath $scout -Encoding utf8 -Value $scoutLines
+    # Субагент коллеги лежит в его папке и в эту копию не едет.
+    $alienAgents = Join-Path $base 'people\x\agents'
+    New-Item -ItemType Directory -Force -Path $alienAgents | Out-Null
+    Set-Content -LiteralPath (Join-Path $alienAgents 'alien.md') -Encoding utf8 -Value '---', 'name: alien', '---', '', 'чужой'
 
-    Check 'субагент базы довезён в копию и спрятан от git проекта' {
+    Check 'субагент оператора довезён в копию и спрятан от git проекта, субагент коллеги — нет' {
         $r = Invoke-AgentsDeploy $repo
         if ($r.code -ne 0) { return "код возврата $($r.code): $($r.text)" }
+        if (Test-Path -LiteralPath (Join-Path $copyAgents 'alien.md')) { return 'довезён субагент коллеги' }
         $dst = Join-Path $copyAgents 'scout.md'
         if (-not (Test-Path -LiteralPath $dst -PathType Leaf)) { return 'файла в копии нет' }
         if ((Get-Content -LiteralPath $dst -Raw) -cne (Get-Content -LiteralPath $scout -Raw)) { return 'файл копии не совпал с базой' }
@@ -1054,7 +1197,7 @@ try {
     # Файл исключений у репозитория один на все копии и каталоги, а блоки в нём не общие.
     Check 'монорепа — у каждого связанного каталога свой блок исключений' {
         foreach ($pair in @(@($baseFoo, $modFoo, 'foo-scout'), @($baseBar, $modCase, 'case-scout'))) {
-            $dir = Join-Path $pair[0] 'agents'
+            $dir = Join-Path (Get-OpDir $pair[0]) 'agents'
             New-Item -ItemType Directory -Force -Path $dir | Out-Null
             Set-Content -LiteralPath (Join-Path $dir ($pair[2] + '.md')) -Encoding utf8 -Value '---', ('name: ' + $pair[2]), '---', '', 'разведать'
             $r = Invoke-AgentsDeploy $pair[1]
@@ -1084,8 +1227,6 @@ try {
     New-TestRepo $migRepo
     Invoke-BaseInit $migBase | Out-Null
     & pwsh -NoProfile -File $link -Path $migRepo -Base $migBase | Out-Null
-    & git -C $migBase add agents-kit.json 2>$null
-    & git -C $migBase commit -qm 'связь' | Out-Null
     $kitFormat = 1
     $steps = @(Get-ChildItem -LiteralPath (Join-Path $PSScriptRoot 'plugin\migrations') -File -Filter '*.ps1' -ErrorAction SilentlyContinue |
         ForEach-Object { if ($_.Name -match '^(\d{3})-') { [int]$Matches[1] } } | Sort-Object)
@@ -1188,7 +1329,7 @@ try {
 
     Check 'новая база на ките с шагами — в agents-kit.json последний формат' {
         New-TestRepo $newRepo
-        Invoke-BaseInit $newBase | Out-Null
+        Invoke-BaseInit $newBase -Script (Join-Path $copyScripts 'base-init.ps1') | Out-Null
         & pwsh -NoProfile -File (Join-Path $copyScripts 'link.ps1') -Path $newRepo -Base $newBase | Out-Null
         $got = Get-MarkerFormat $newBase
         if ($got -ne $fakeFormat) { return "формат $got, ожидался $fakeFormat" }
@@ -1216,20 +1357,44 @@ try {
         return $null
     }
 
-    # Настоящие шаги перевода — на базе формата 1, собранной руками: список копий в agents-kit.json,
-    # память плоско в work/. Запись о копии, которой на диске нет, — копия другой машины.
+    # Настоящие шаги перевода — на базах прежних форматов, собранных руками так, как их вела
+    # прежняя версия кита: бэклог, флоу и субагенты в корне базы, память в work/.
+    function New-OldBase([string]$Dir, [string]$Repo, $Marker) {
+        New-Item -ItemType Directory -Force -Path $Dir | Out-Null
+        & git -C $Dir init -q
+        Set-Content -LiteralPath (Join-Path $Dir '.gitignore') -Value 'local/' -Encoding utf8
+        Set-Content -LiteralPath (Join-Path $Dir 'product.md') -Value '# Старый проект — продукт' -Encoding utf8
+        Set-Content -LiteralPath (Join-Path $Dir 'boundaries.md') -Value '# Старый проект — рамки' -Encoding utf8
+        Set-Content -LiteralPath (Join-Path $Dir 'backlog.md') -Encoding utf8 -Value '# Старый проект — бэклог', 'следующий номер: ORD-3', '',
+            '## ORD-2 сверить схему', '', 'Схема: artifacts/both.png.'
+        New-Item -ItemType Directory -Force -Path (Join-Path $Dir 'flow'), (Join-Path $Dir 'agents'), (Join-Path $Dir 'artifacts'), (Join-Path $Dir 'decisions') | Out-Null
+        Set-Content -LiteralPath (Join-Path $Dir 'flow\scenarios.md') -Value '# Старый проект — сценарии' -Encoding utf8
+        Set-Content -LiteralPath (Join-Path $Dir 'agents\scout.md') -Encoding utf8 -Value '---', 'name: scout', '---', '', 'разведать'
+        Set-Content -LiteralPath (Join-Path $Dir 'decisions\ui.md') -Encoding utf8 -Value '# Экран', 'когда: правка экрана', '', '- схема: artifacts/both.png'
+        foreach ($name in 'memo.png', 'both.png') { Set-Content -LiteralPath (Join-Path $Dir "artifacts\$name") -Value 'png' }
+        $Marker | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $Dir 'agents-kit.json') -Encoding utf8
+        & git -C $Repo config --local agents-kit.base $Dir
+    }
+    $v1Migrate = Join-Path $scripts 'base-migrate.ps1'
+
+    # Формат 1: список копий в agents-kit.json, память плоско в work/. Запись о копии, которой
+    # на диске нет, — копия другой машины.
     New-TestRepo $v1Repo
-    Invoke-BaseInit $v1Base | Out-Null
-    & git -C $v1Repo config --local agents-kit.base $v1Base
-    @{ kit = 'agents-kit'; version = 1; workspaces = @($v1Repo, 'D:\elsewhere\v1') } | ConvertTo-Json |
-        Set-Content -LiteralPath (Join-Path $v1Base 'agents-kit.json') -Encoding utf8
+    New-OldBase $v1Base $v1Repo @{ kit = 'agents-kit'; version = 1; workspaces = @($v1Repo, 'D:\elsewhere\v1') }
     $v1Memory = Join-Path $v1Base 'work\v1-task.md'
     Set-KitMemory $v1Memory $v1Repo 'работа прежнего формата'
+    Add-Content -LiteralPath $v1Memory -Encoding utf8 -Value '', '## Артефакты', '- заметка: artifacts/memo.png'
     $v1Foreign = Join-Path $v1Base 'work\elsewhere-task.md'
     Set-KitMemory $v1Foreign 'D:\elsewhere\v1' 'работа другой машины'
-    & git -C $v1Base add -A 2>$null
-    & git -C $v1Base commit -qm 'формат 1' | Out-Null
-    $v1Migrate = Join-Path $scripts 'base-migrate.ps1'
+    Commit-All $v1Base 'формат 1'
+
+    Check 'перевод без имени оператора — отказ до первого шага' {
+        $r = Invoke-BaseMigrate $v1Migrate $v1Repo ''
+        if ($r.code -eq 0) { return 'скрипт не отказал' }
+        if ($r.text -notmatch '-Operator') { return "отказ не называет -Operator: $($r.text)" }
+        if ((Get-MarkerFormat $v1Base) -ne 1) { return 'формат поднят' }
+        return $null
+    }
 
     Check 'перевод с формата 1 — память копии другой машины останавливает, база не тронута' {
         $r = Invoke-BaseMigrate $v1Migrate $v1Repo
@@ -1237,30 +1402,72 @@ try {
         if ($r.text -notmatch 'elsewhere-task\.md') { return "не назван файл памяти: $($r.text)" }
         if ((Get-MarkerFormat $v1Base) -ne 1) { return 'формат поднят' }
         if (-not (Test-Path -LiteralPath $v1Memory)) { return 'своя память уехала' }
-        if (Test-Path -LiteralPath (Join-Path $v1Base 'local\workspaces.json')) { return 'список копий всё-таки записан' }
+        $me = Join-Path $v1Base 'local\me.json'
+        if ((Test-Path -LiteralPath $me) -and @((Get-Content -LiteralPath $me -Raw | ConvertFrom-Json).workspaces).Count) { return 'список копий всё-таки записан' }
         return $null
     }
 
     & git -C $v1Base rm -q -- $v1Foreign
     & git -C $v1Base commit -qm 'задача другой машины закрыта' | Out-Null
 
-    Check 'перевод с формата 1 — список копий этой машины в local, память в каталоге машины, связь сошлась' {
+    Check 'перевод с формата 1 — бэклог и память в личном репозитории, флоу и субагенты в папке оператора' {
         $before = Get-CommitCount $v1Base
         $r = Invoke-BaseMigrate $v1Migrate $v1Repo
         if ($r.code -ne 0) { return "код возврата $($r.code): $($r.text)" }
         if ((Get-MarkerFormat $v1Base) -ne $kitFormat) { return "формат $(Get-MarkerFormat $v1Base), ожидался $kitFormat" }
         $marker = Get-Content -LiteralPath (Join-Path $v1Base 'agents-kit.json') -Raw | ConvertFrom-Json
         if ($marker.PSObject.Properties.Name -contains 'workspaces') { return 'в agents-kit.json остался список копий' }
-        $list = @((Get-Content -LiteralPath (Join-Path $v1Base 'local\workspaces.json') -Raw | ConvertFrom-Json).workspaces)
+        if ($marker.prefix -cne 'ORD') { return "в agents-kit.json буквы «$($marker.prefix)», ожидались ORD" }
+        $me = Get-Content -LiteralPath (Join-Path $v1Base 'local\me.json') -Raw | ConvertFrom-Json
+        $list = @($me.workspaces)
         if ($list.Count -ne 1 -or $list[0] -ine $v1Repo) { return "в списке копий «$($list -join ', ')», ожидалась одна «$v1Repo»" }
-        if (Test-Path -LiteralPath $v1Memory) { return 'память осталась по прежнему адресу' }
+        foreach ($gone in 'backlog.md', 'work', 'flow', 'agents', 'artifacts\memo.png') {
+            if (Test-Path -LiteralPath (Join-Path $v1Base $gone)) { return "в корне базы остался $gone" }
+        }
+        $meDir = Get-MeDir $v1Base
+        foreach ($f in 'backlog.md', 'artifacts\memo.png', 'artifacts\both.png') {
+            if (-not (Test-Path -LiteralPath (Join-Path $meDir $f) -PathType Leaf)) { return "в личном репозитории нет $f" }
+        }
+        if (-not (Test-Path -LiteralPath (Join-Path $v1Base 'artifacts\both.png') -PathType Leaf)) { return 'артефакт, на который ссылается знание, ушёл из базы' }
+        foreach ($f in 'flow\scenarios.md', 'agents\scout.md') {
+            if (-not (Test-Path -LiteralPath (Join-Path (Get-OpDir $v1Base) $f) -PathType Leaf)) { return "в папке оператора нет $f" }
+        }
         if ((Get-CommitCount $v1Base) -ne $before + $kitFormat - 1) { return "коммитов прибавилось $((Get-CommitCount $v1Base) - $before), ожидалось $($kitFormat - 1)" }
-        $dirty = @(& git -C $v1Base status --porcelain --untracked-files=all | Where-Object { $_ })
-        if ($dirty.Count) { return "в базе осталось незакоммиченное: $($dirty -join '; ')" }
+        foreach ($r2 in $v1Base, $meDir) {
+            $dirty = @(& git -C $r2 status --porcelain --untracked-files=all | Where-Object { $_ })
+            if ($dirty.Count) { return "в $r2 осталось незакоммиченное: $($dirty -join '; ')" }
+        }
         $got = Invoke-Hook $v1Repo
         $address = Find-HookMemoryPath $got
-        if (-not $address -or -not (Test-Path -LiteralPath $address)) { return "хук назвал адрес «$address», а памяти там нет" }
+        if (-not $address -or -not (Test-Path -LiteralPath $address)) { return "хук назвал адрес «$address», а памяти там нет: $($got.Split("`n")[0])" }
+        # Красное о памяти стенда законно: в ней нет сценария. Остальное красное — перевод
+        # оставил базу не в том формате, что ждёт кит.
+        $fails = @($got -split "`n" | Where-Object { $_ -match '^- \*\*FAIL\*\*' -and $_ -notmatch '\\work\\' })
+        if ($fails.Count) { return "сверка после перевода красная: $($fails -join ' | ')" }
         return Test-HookText $got 'работа прежнего формата'
+    }
+
+    # Формат 2: список копий в local\workspaces.json, память в каталоге машины. Адрес памяти
+    # прежнего формата хук уже не назовёт — он собирается здесь по правилу того формата.
+    $v2Repo = Join-Path $root 'v2'
+    $v2Base = Join-Path $root 'base-v2'
+    New-TestRepo $v2Repo
+    New-OldBase $v2Base $v2Repo @{ kit = 'agents-kit'; version = 2 }
+    New-Item -ItemType Directory -Force -Path (Join-Path $v2Base 'local') | Out-Null
+    @{ workspaces = @($v2Repo) } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $v2Base 'local\workspaces.json') -Encoding utf8
+    $slug = { param($s) [regex]::Replace($s.ToLowerInvariant(), '[^\p{L}\p{Nd}]+', '-').Trim('-') }
+    $v2Memory = Join-Path $v2Base ('work\' + (& $slug $env:COMPUTERNAME) + '\' + (& $slug $v2Repo) + '.md')
+    Set-KitMemory $v2Memory $v2Repo 'работа формата 2'
+    Commit-All $v2Base 'формат 2'
+
+    Check 'перевод с формата 2 — список копий в local\me.json, память в личном репозитории' {
+        $r = Invoke-BaseMigrate $v1Migrate $v2Repo
+        if ($r.code -ne 0) { return "код возврата $($r.code): $($r.text)" }
+        if (Test-Path -LiteralPath (Join-Path $v2Base 'local\workspaces.json')) { return 'local\workspaces.json остался' }
+        $me = Get-Content -LiteralPath (Join-Path $v2Base 'local\me.json') -Raw | ConvertFrom-Json
+        if (@($me.workspaces).Count -ne 1 -or $me.operator -ne $script:op) { return "в local\me.json: $($me | ConvertTo-Json -Compress)" }
+        $got = Invoke-Hook $v2Repo
+        return Test-HookText $got 'работа формата 2', 'проект под китом'
     }
 
     # Дальше — не стенд, а сам репозиторий кита.
@@ -1370,7 +1577,7 @@ try {
             # пользователь кита. .claude в plugin не лежит — его путь всегда от корня.
             # Файл или каталог должен найтись среди файлов кита.
             $from = if ($entry.file -like 'plugin/*') { 'plugin/' } else { '' }
-            foreach ($m in [regex]::Matches($entry.text, '(?<![\p{L}\p{Nd}_./\\-])((?:plugin[/\\])?(?:\.claude[/\\](?:skills|agents)|hooks|reference|scripts|skills|template[/\\]base)[/\\][\p{L}\p{Nd}_./\\-]*)')) {
+            foreach ($m in [regex]::Matches($entry.text, '(?<![\p{L}\p{Nd}_./\\-])((?:plugin[/\\])?(?:\.claude[/\\](?:skills|agents)|hooks|reference|scripts|skills|template[/\\](?:base|operator|me))[/\\][\p{L}\p{Nd}_./\\-]*)')) {
                 $path = $m.Groups[1].Value.Replace('\', '/').TrimEnd('.')
                 if (-not $path.StartsWith('plugin/') -and -not $path.StartsWith('.claude/')) { $path = $from + $path }
                 if (-not ($kitFiles | Where-Object { $_ -eq $path -or $_.StartsWith($path.TrimEnd('/') + '/') })) {

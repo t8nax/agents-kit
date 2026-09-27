@@ -1,5 +1,6 @@
-# agents-kit: довезти субагентов базы в рабочую копию — файлы каталога субагентов копии и
-# строки, которыми они спрятаны от git проекта.
+# agents-kit: довезти субагентов оператора из его папки в базе в рабочую копию — файлы каталога
+# субагентов копии и строки, которыми они спрятаны от git проекта. Субагенты коллег не
+# довозятся: их зовут этапы чужого флоу.
 #   pwsh -NoProfile -File scripts\agents-deploy.ps1 [-Path <копия>]
 #
 # Файл кладётся один в один: субагент — формат Claude Code, и кит его не разбирает.
@@ -21,6 +22,7 @@ switch ($state.status) {
     'NoPointer' { throw "каталог «$($state.workspace)» под китом не числится — сначала взять его под кит скиллом /onboard" }
     'Linked'    { }
     { $_ -in 'Outdated', 'Newer' } { throw (Get-KitFormatProblem $state) }
+    { $_ -in 'Unnamed', 'NoPersonal' } { throw "места оператора на этой машине нет — завести: $(Get-KitOperatorCommand $state.base $state.operator)" }
     default    { throw "связь копии «$($state.workspace)» с базой разорвана — link.ps1 без аргументов покажет, что именно" }
 }
 
@@ -51,7 +53,7 @@ function Set-KitAgentExcludeBlock([string]$ExcludePath, $Marks, [string[]]$Lines
 
 $target = Get-KitAgentDir $state.worktree
 $sources = [ordered]@{}
-foreach ($file in @(Get-ChildItem -LiteralPath (Join-Path $state.base 'agents') -Filter '*.md' -File -ErrorAction SilentlyContinue | Sort-Object Name)) {
+foreach ($file in @(Get-ChildItem -LiteralPath (Join-Path $state.people 'agents') -Filter '*.md' -File -ErrorAction SilentlyContinue | Sort-Object Name)) {
     $sources[$file.Name] = $file.FullName
 }
 
@@ -98,7 +100,7 @@ foreach ($name in $deployed) {
     $removed.Add($name)
 }
 
-# Строка пишется на каждого субагента базы, включая занятое имя: файл исключений один на все
+# Строка пишется на каждого субагента оператора, включая занятое имя: файл исключений один на все
 # копии репозитория, а занятые имена у них разные, и блок, собранный по составу одной копии,
 # стирал бы прогон в соседней. Отслеживаемый файл лишняя строка не задевает — исключения к нему
 # git не применяет.
@@ -108,7 +110,7 @@ if ($PSCmdlet.ShouldProcess($excludePath, 'переписать блок кит�
 }
 
 Write-Host "Рабочая копия: $($state.worktree)"
-Write-Host "База:          $($state.base)"
+Write-Host "Субагенты:     $(Join-Path $state.people 'agents')"
 foreach ($name in $placed)  { Write-Host "  довезён:  $name" }
 foreach ($name in $updated) { Write-Host "  обновлён: $name" }
 foreach ($name in $removed) { Write-Host "  убран:    $name" }

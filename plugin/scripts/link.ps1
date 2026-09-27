@@ -58,7 +58,19 @@ if (-not $Base) {
             Write-Host "База:          формат не тот: $(Get-KitFormatProblem $state)" -ForegroundColor Red
             exit 1
         }
+        'Unnamed' {
+            Write-Host "Оператор:      на этой машине не назван — чьи флоу и субагенты, не опознать" -ForegroundColor Red
+            Write-Host "               завести: $(Get-KitOperatorCommand $state.base $null)"
+            exit 1
+        }
+        'NoPersonal' {
+            Write-Host "Оператор:      $($state.operator), личного репозитория на этой машине нет: $($state.personal)" -ForegroundColor Red
+            Write-Host "               завести: $(Get-KitOperatorCommand $state.base $state.operator)"
+            exit 1
+        }
         'Linked' {
+            Write-Host "Оператор:      $($state.operator), папка $($state.people)"
+            Write-Host "Личный:        $($state.personal)"
             Write-Host "База:          связь двусторонняя, формат $($state.format)" -ForegroundColor Green
             exit 0
         }
@@ -105,7 +117,7 @@ elseif ([int]$marker.version -gt (Get-KitFormat)) {
 
 $listPath = Get-KitWorkspacesPath $baseN
 $list = Get-KitWorkspaceList $baseN
-if (-not $list) { throw "«$listPath» существует, но не разбирается как список копий — разобраться должен оператор" }
+if (-not $list) { throw "«$listPath» существует, но не разбирается — разобраться должен оператор" }
 $known = @(Get-KitWorkspaces $baseN)
 if ($known | Where-Object { $_ -ieq $workspace }) {
     Write-Host "База уже числит эту копию на этой машине: $workspace"
@@ -129,13 +141,20 @@ if ($PSCmdlet.ShouldProcess($workspace, "указатель $pointerKey → $bas
 }
 Write-Host "Указатель поставлен: $workspace → $baseN (ключ $pointerKey)"
 if ($state.base -and $state.base -ine $baseN) {
-    Write-Host "Прежний указатель вёл в $($state.base) — если та база больше не нужна, её запись об этой копии в local\workspaces.json стоит убрать руками." -ForegroundColor Yellow
+    Write-Host "Прежний указатель вёл в $($state.base) — если та база больше не нужна, её запись об этой копии в local\me.json стоит убрать руками." -ForegroundColor Yellow
 }
-# Субагенты базы довозятся сразу за связью: у второй копии проекта они уже есть в базе,
+# Субагенты оператора довозятся сразу за связью: у второй копии проекта они уже есть в базе,
 # и без раскладки этап звал бы в ней исполнителя, которого в копии нет. Не вышло — связь
-# всё равно поднята, и сказать об этом важнее, чем упасть.
-try { & (Join-Path $PSScriptRoot 'agents-deploy.ps1') -Path $Path }
-catch { Write-Host "Субагентов базы довезти не удалось: $($_.Exception.Message) — прогнать agents-deploy.ps1 в копии" -ForegroundColor Yellow }
+# всё равно поднята, и сказать об этом важнее, чем упасть. Места оператора на машине нет —
+# раскладывать нечьих субагентов нельзя, и дальше идёт base-init.ps1.
+$after = Get-KitLinkState $Path
+if ($after.status -in 'Unnamed', 'NoPersonal') {
+    Write-Host "Места оператора на этой машине нет — завести: $(Get-KitOperatorCommand $baseN $after.operator)" -ForegroundColor Yellow
+}
+else {
+    try { & (Join-Path $PSScriptRoot 'agents-deploy.ps1') -Path $Path }
+    catch { Write-Host "Субагентов довезти не удалось: $($_.Exception.Message) — прогнать agents-deploy.ps1 в копии" -ForegroundColor Yellow }
+}
 
 # Связь репозитория подкаталог перебивает: без этой строки оператор считал бы, что
 # связал всё дерево, а сессия в подкаталоге брала бы другую базу.

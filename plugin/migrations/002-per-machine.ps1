@@ -28,7 +28,7 @@ foreach ($file in @(Get-ChildItem -LiteralPath (Join-Path $Base 'work') -File -F
 $markerPath = Get-KitMarkerPath $Base
 $marker = Get-Content -LiteralPath $markerPath -Raw | ConvertFrom-Json
 $list = Get-KitWorkspaceList $Base
-if (-not $list) { throw "local\workspaces.json не разбирается — разобраться должен оператор" }
+if (-not $list) { throw "$(Get-KitWorkspacesPath $Base) не разбирается — разобраться должен оператор" }
 
 foreach ($move in $moves) {
     New-Item -ItemType Directory -Force -Path (Split-Path $move.to -Parent) | Out-Null

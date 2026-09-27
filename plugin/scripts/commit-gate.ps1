@@ -1,9 +1,10 @@
-# agents-kit: хук PreToolUse — пускать ли этот коммит в базу знаний.
+# agents-kit: хук PreToolUse — пускать ли этот коммит в базу знаний или в личный репозиторий
+# оператора.
 #
 # Разбор команды и перевод находок base-check.ps1 в решение: FAIL — коммит не идёт,
 # похожее на секрет — решает оператор, остальное — молчание.
 #
-# Проверяются файлы коммита, local/ и бэклог, а не база целиком: чужой перерасход не
+# Проверяются файлы коммита, а не база целиком: чужой перерасход не
 # останавливает свой коммит. По всей базе ищутся только ссылки на артефакты, которые тронул коммит. Команда разбирается, а не исполняется; не разобралась — коммит
 # идёт, остальное назовёт сверка на старте.
 $ErrorActionPreference = 'Stop'
@@ -149,8 +150,12 @@ try {
 
         $call = Get-KitCommitCall $words $dir
         if (-not $call) { continue }
+        # Судится коммит в базу и в личный репозиторий оператора: память и бэклог живут там,
+        # и их коммит несёт то же, что коммит знания, — шаги, ответы, взятые записи.
         $top = Invoke-KitGit $call.dir @('rev-parse', '--show-toplevel')
-        if (-not $top -or (ConvertTo-KitPath $top) -ine $state.base) { continue }
+        if (-not $top) { continue }
+        $top = ConvertTo-KitPath $top
+        if ($top -ine $state.base -and $top -ine (Get-KitPersonalDir $state.base)) { continue }
         if ($formatProblem) {
             Emit 'deny' @"
 agents-kit: коммит в базу знаний остановлен — $formatProblem.
@@ -160,8 +165,8 @@ agents-kit: коммит в базу знаний остановлен — $form
             exit 0
         }
 
-        $files = Get-KitCommitFiles $call $state.base
-        $findings += @(Get-KitCommitFindings $state.base $worktree $files)
+        $files = Get-KitCommitFiles $call $top
+        $findings += @(Get-KitCommitFindings $state.base $worktree $files $top)
     }
 
     # Прочие WARN коммит не останавливают и оператора не дёргают: их назовёт сверка на
