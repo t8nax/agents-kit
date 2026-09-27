@@ -34,12 +34,28 @@ $script:failed = 0
 function Ok  ([string]$m) { Write-Host "[ OK ]   $m"; $script:passed++ }
 function Bad ([string]$m) { Write-Host "[ FAIL ] $m" -ForegroundColor Red; $script:failed++ }
 
-# Хук зовётся дочерним процессом, как его зовёт Claude Code: читает stdin и выходит exit'ом.
+# Хук зовётся дочерним процессом, как его зовёт Claude Code: без окна, и консоль у него своя,
+# в кодовой странице системы, а не консоль сверки; JSON в stdin — UTF-8. Ответ — вывод хука.
+function Invoke-HookProcess([string]$Hook, [string]$Payload) {
+    $info = [System.Diagnostics.ProcessStartInfo]::new('pwsh')
+    foreach ($a in '-NoProfile', '-File', $Hook) { $info.ArgumentList.Add($a) }
+    $info.RedirectStandardInput = $true
+    $info.RedirectStandardOutput = $true
+    $info.StandardInputEncoding = [System.Text.UTF8Encoding]::new($false)
+    $info.StandardOutputEncoding = [System.Text.UTF8Encoding]::new($false)
+    $info.UseShellExecute = $false
+    $info.CreateNoWindow = $true
+    $process = [System.Diagnostics.Process]::Start($info)
+    $process.StandardInput.Write($Payload)
+    $process.StandardInput.Close()
+    $out = $process.StandardOutput.ReadToEnd()
+    $process.WaitForExit()
+    return $out.Trim()
+}
+
 function Invoke-Hook([string]$Dir, [string]$Hook = $hook) {
     $payload = @{ cwd = $Dir } | ConvertTo-Json -Compress
-    $out = $payload | & pwsh -NoProfile -File $Hook 2>$null
-    if (-not $out) { return '' }
-    $text = ($out -join "`n").Trim()
+    $text = Invoke-HookProcess $Hook $payload
     if (-not $text) { return '' }
     try { return [string](($text | ConvertFrom-Json).hookSpecificOutput.additionalContext) }
     catch { return "!!НЕ-JSON!! $text" }
@@ -49,8 +65,7 @@ function Invoke-Hook([string]$Dir, [string]$Hook = $hook) {
 # или пустая строка, если коммит идёт.
 function Invoke-CommitGate([string]$Dir, [string]$Command, [string]$Gate = $script:gate) {
     $payload = @{ cwd = $Dir; tool_input = @{ command = $Command } } | ConvertTo-Json -Compress
-    $out = $payload | & pwsh -NoProfile -File $Gate 2>$null
-    $text = ($out -join "`n").Trim()
+    $text = Invoke-HookProcess $Gate $payload
     if (-not $text) { return '' }
     try { return [string](($text | ConvertFrom-Json).hookSpecificOutput.permissionDecisionReason) }
     catch { return "!!НЕ-JSON!! $text" }
@@ -419,6 +434,13 @@ try {
     Check 'связанная копия — путь глоссария в контексте' { Test-HookText $linked 'glossary.md' }
     Check 'связанная копия — отчёт link.ps1 зелёный' { ExpectLinkReport $repo 0 'связь двусторонняя' }
     Check 'связанная копия — содержимое базы в контексте' { Test-HookText $linked 'сверка остатков идёт ночным прогоном' }
+    Check 'кириллица в пути каталога — хук опознаёт копию' {
+        $cyrillic = Join-Path $repo 'кириллица'
+        New-Item -ItemType Directory -Force -Path $cyrillic | Out-Null
+        $got = Invoke-Hook $cyrillic
+        Remove-Item -LiteralPath $cyrillic -Recurse -Force
+        return Test-HookText $got $base
+    }
 
     # Имя проекта — заголовок product.md без хвоста каркаса.
     Check 'связанная копия — имя проекта в шапке подачи' { Test-HookText $linked "- Проект: Сверочный сервис`n" }

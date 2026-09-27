@@ -134,7 +134,8 @@ try {
     . (Join-Path $PSScriptRoot 'link-state.ps1')
     . (Join-Path $PSScriptRoot 'base-check.ps1')
 
-    $raw = [Console]::In.ReadToEnd()
+    # Claude Code пишет JSON в UTF-8, а консоль хука — в кодовой странице системы.
+    $raw = [System.IO.StreamReader]::new([Console]::OpenStandardInput(), [System.Text.UTF8Encoding]::new($false)).ReadToEnd()
     $cwd = $null
     if ($raw) { try { $cwd = (ConvertFrom-Json $raw).cwd } catch { } }
     if (-not $cwd) { $cwd = (Get-Location).Path }
