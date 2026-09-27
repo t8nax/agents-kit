@@ -211,7 +211,7 @@ function Test-KitOperatorName([string]$Name) {
     return [bool]($Name -and $Name -cmatch '^[a-z0-9]+(-[a-z0-9]+)*$')
 }
 
-# Папка оператора в общей базе — его флоу и субагенты.
+# Папка оператора в общей базе — его рамки, флоу и субагенты.
 function Get-KitOperatorDir([string]$BaseDir, [string]$Name) {
     if (-not $BaseDir -or -not (Test-KitOperatorName $Name)) { return $null }
     return ConvertTo-KitPath (Join-Path $BaseDir ('people\' + $Name))
@@ -373,8 +373,8 @@ function Get-KitOperatorName([string]$BaseDir) {
     return $name
 }
 
-# Имя пишется один раз на машину: другое имя поверх названного подменило бы, чьи флоу
-# и субагенты видит каждая копия этой машины.
+# Имя пишется один раз на машину: другое имя поверх названного подменило бы, чьи рамки,
+# флоу и субагенты видит каждая копия этой машины.
 function Set-KitOperatorName([string]$BaseDir, [string]$Name) {
     if (-not (Test-KitOperatorName $Name)) { throw "имя оператора «$Name» не по форме — латиница в нижнем регистре, цифры и дефис между ними: b-ignatyev" }
     $list = Get-KitWorkspaceList $BaseDir
@@ -411,7 +411,7 @@ function Test-KitWorkspaceKnown([string]$BaseDir, [string]$Workspace) {
 #   Outdated    формат базы старше того, что ждёт кит, — перевести
 #   Newer       базу перевёл кит новее этого — обновить кит
 #   Unlisted    база есть, но на этой машине эту копию не числит своей
-#   Unnamed     на этой машине оператор базы не назван — чьи флоу и субагенты, не опознать
+#   Unnamed     на этой машине оператор базы не назван — чьи рамки, флоу и субагенты, не опознать
 #   NoPersonal  личного репозитория оператора на этой машине нет — памяти и бэклогу негде жить
 #   Linked      всё сошлось, формат тот, что ждёт кит
 function Get-KitLinkState([string]$Dir) {

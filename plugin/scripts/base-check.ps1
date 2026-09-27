@@ -14,13 +14,16 @@
 
 . (Join-Path $PSScriptRoot 'link-state.ps1')
 
-# Подаваемые содержимым файлы; только у них потолок цены подачи. Названы поимённо, а не корень
-# базы: подача корня везла бы в каждую сессию любой положенный туда .md.
-$script:KitServedFiles = @('product.md', 'boundaries.md')
+# Подаваемые содержимым файлы — от корня базы и от папки оператора; только у них потолок цены
+# подачи. Названы поимённо, а не каталог: подача каталога везла бы в каждую сессию любой
+# положенный туда .md. Из папок оператора подаётся только своя: рамки коллеги — его мера
+# свободы агента, а не этой сессии.
+$script:KitServedFiles = @('product.md', 'team.md')
+$script:KitOperatorServedFiles = @('autonomy.md')
 $script:KitDecisionsDir = 'decisions'
 $script:KitArtifactsDir = 'artifacts'
-# В папке оператора: субагенты и флоу — каталог: scenarios.md со списками сценариев и stages/
-# с файлами этапов. Ссылка в списке ведёт в stages/ от scenarios.md.
+# В папке оператора: рамки, субагенты и флоу — каталог: scenarios.md со списками сценариев
+# и stages/ с файлами этапов. Ссылка в списке ведёт в stages/ от scenarios.md.
 $script:KitAgentsDir = 'agents'
 $script:KitFlowDir = 'flow'
 $script:KitScenariosFile = 'flow/scenarios.md'
@@ -32,6 +35,19 @@ function Get-KitOperatorRoot([string]$Base) {
     $name = Get-KitOperatorName $Base
     if (-not $name) { return $null }
     return [pscustomobject]@{ dir = (Get-KitOperatorDir $Base $name); label = "people/$name"; name = $name }
+}
+
+# Подаваемые файлы этой машины: { path; label — подпись от корня базы; name — ключ потолка }.
+# Имени оператора нет — файлов его папки нет.
+function Get-KitServedFiles([string]$Base) {
+    foreach ($name in $script:KitServedFiles) {
+        [pscustomobject]@{ path = (Join-Path $Base $name); label = $name; name = $name }
+    }
+    $operator = Get-KitOperatorRoot $Base
+    if (-not $operator) { return }
+    foreach ($name in $script:KitOperatorServedFiles) {
+        [pscustomobject]@{ path = (Join-Path $operator.dir $name); label = "$($operator.label)/$name"; name = $name }
+    }
 }
 
 function Get-KitScenariosLabel([string]$Base) {
@@ -320,8 +336,8 @@ function Get-KitGitFindings([string]$Base) {
     }
 }
 
-function Get-KitKnowledgeCeilingFindings([string]$Path, [string]$Label, $Ceilings) {
-    $ceiling = $Ceilings.files[$Label.ToLowerInvariant()]
+function Get-KitKnowledgeCeilingFindings([string]$Path, [string]$Label, [string]$Name, $Ceilings) {
+    $ceiling = $Ceilings.files[$Name.ToLowerInvariant()]
     if (-not $ceiling) {
         New-KitFinding 'FAIL' $Label 'потолок не разобран — в таблице «Куда именно» раскладки нет ячейки вида «N строк» для этого файла'
         return
@@ -517,9 +533,9 @@ function Get-KitRootFindings([string]$Base, $Ceilings) {
             }
         }
     }
-    foreach ($file in @(Get-ChildItem -LiteralPath $Base -File -ErrorAction SilentlyContinue | Where-Object { $_.Extension -ieq '.md' })) {
-        if ($script:KitServedFiles -contains $file.Name) {
-            Get-KitKnowledgeCeilingFindings $file.FullName $file.Name $Ceilings
+    foreach ($file in @(Get-KitServedFiles $Base)) {
+        if (Test-Path -LiteralPath $file.path -PathType Leaf) {
+            Get-KitKnowledgeCeilingFindings $file.path $file.label $file.name $Ceilings
         }
     }
     $backlog = Join-Path $personal 'backlog.md'
@@ -1499,6 +1515,8 @@ function Get-KitCommitFindings([string]$Base, [string]$Worktree, [string[]]$File
     $operator = Get-KitOperatorRoot $Base
     $flowPrefix = $null
     if ($operator) { $flowPrefix = (Get-KitRelativePath $Base $operator.dir) + '\' + $script:KitFlowDir + '\' }
+    $served = @{}
+    foreach ($file in @(Get-KitServedFiles $Base)) { $served[(Get-KitRelativePath $Base (ConvertTo-KitPath $file.path)).ToLowerInvariant()] = $file }
 
     Get-KitGitFindings $Base
 
@@ -1525,9 +1543,8 @@ function Get-KitCommitFindings([string]$Base, [string]$Worktree, [string[]]$File
             $artifacts[$Matches[1].ToLowerInvariant()] = $Matches[1]
             Get-KitArtifactSizeFindings $path $rel $rules
         }
-        if ($rel -notmatch '\\' -and $rel -match '\.md$') {
-            if ($script:KitServedFiles -contains $rel) { Get-KitKnowledgeCeilingFindings $path $rel $rules }
-        }
+        $file = $served[$rel.ToLowerInvariant()]
+        if ($file) { Get-KitKnowledgeCeilingFindings $path $file.label $file.name $rules }
         elseif ($rel -match "^$($script:KitDecisionsDir)\\[^\\]+\.md$") {
             Get-KitDecisionFileFindings $path $rel $rules
         }

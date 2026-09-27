@@ -63,7 +63,7 @@ if (-not $Base) {
             exit 1
         }
         'Unnamed' {
-            Write-Host "Оператор:      на этой машине не назван — чьи флоу и субагенты, не опознать" -ForegroundColor Red
+            Write-Host "Оператор:      на этой машине не назван — чьи рамки, флоу и субагенты, не опознать" -ForegroundColor Red
             Write-Host "               завести: $(Get-KitOperatorCommand $state.base $null)"
             exit 1
         }

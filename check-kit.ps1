@@ -300,10 +300,10 @@ try {
     Check 'база заведена — каркас, папка оператора, личный репозиторий и коммиты' {
         $r = Invoke-BaseInit $base
         if ($r.code -ne 0) { return "код возврата $($r.code): $($r.text)" }
-        foreach ($f in 'product.md', 'boundaries.md', '.gitignore', 'agents-kit.json', "people\$script:op\flow\scenarios.md", 'local\me\backlog.md', 'local\me.json') {
+        foreach ($f in 'product.md', 'team.md', '.gitignore', 'agents-kit.json', "people\$script:op\autonomy.md", "people\$script:op\flow\scenarios.md", 'local\me\backlog.md', 'local\me.json') {
             if (-not (Test-Path -LiteralPath (Join-Path $base $f) -PathType Leaf)) { return "нет файла $f" }
         }
-        foreach ($f in 'backlog.md', 'flow') {
+        foreach ($f in 'backlog.md', 'flow', 'autonomy.md', 'boundaries.md') {
             if (Test-Path -LiteralPath (Join-Path $base $f)) { return "в корне базы лежит $f — ему место не там" }
         }
         foreach ($r2 in $base, (Get-MeDir $base)) {
@@ -423,6 +423,39 @@ try {
     $decisionsDir = Join-Path $base 'decisions'
     Check 'решений нет — сессии названо, куда их заводить' { Test-HookText $linked 'решений пока нет' }
 
+    # Рамки — свои: из папок операторов подаётся только папка оператора этой машины.
+    Check 'правила команды и рамки своего оператора — в контексте, рамки коллеги — нет' {
+        $team = Join-Path $base 'team.md'
+        $own = Join-Path (Get-OpDir $base) 'autonomy.md'
+        $other = Join-Path $base 'people\other\autonomy.md'
+        $saved = @{}
+        foreach ($f in $team, $own) { $saved[$f] = Get-Content -LiteralPath $f -Raw }
+        Set-Content -LiteralPath $team -Encoding utf8 -Value '# Правила команды', '', 'без ревью не мержим'
+        Set-Content -LiteralPath $own -Encoding utf8 -Value '# Рамки', '', 'миграции схемы решает сам'
+        New-Item -ItemType Directory -Force -Path (Split-Path $other -Parent) | Out-Null
+        Set-Content -LiteralPath $other -Encoding utf8 -Value '# Рамки', '', 'рамка коллеги вне подачи'
+        try { return ExpectText $repo 'без ревью не мержим', 'миграции схемы решает сам', 'people/op/autonomy.md' -Lacks 'рамка коллеги вне подачи' }
+        finally {
+            foreach ($f in $team, $own) { Set-Content -LiteralPath $f -Value $saved[$f] -Encoding utf8 -NoNewline }
+            Remove-Item -LiteralPath (Split-Path $other -Parent) -Recurse -Force
+        }
+    }
+
+    # Потолок рамок считается и на старте, и в коммите: файл лежит не в корне базы.
+    Check 'рамки оператора больше потолка — сверка и гейт называют' {
+        $own = Join-Path (Get-OpDir $base) 'autonomy.md'
+        $saved = Get-Content -LiteralPath $own -Raw
+        Set-Content -LiteralPath $own -Encoding utf8 -Value (@('# Рамки') + @(1..31 | ForEach-Object { "- строка $_" }))
+        try {
+            $problem = ExpectText $repo 'people/op/autonomy.md', 'при потолке 30'
+            if ($problem) { return $problem }
+            $reason = Invoke-CommitGate $repo "git -C `"$base`" commit -m x -- `"$own`""
+            if ($reason -notmatch 'при потолке 30') { return "гейт не остановил: «$reason»" }
+            return $null
+        }
+        finally { Set-Content -LiteralPath $own -Value $saved -Encoding utf8 -NoNewline }
+    }
+
     Check 'файл в корне базы сверх подаваемых — в контекст не попадает' {
         Set-Content -LiteralPath (Join-Path $base 'extra.md') -Encoding utf8 `
             -Value '# Лишнее', '', 'строка из файла вне подачи'
@@ -511,7 +544,7 @@ try {
 
     # Один пропавший файл не должен уносить с собой подачу остальных. Этим же ответом хука
     # назван адрес памяти, которой ещё нет.
-    Remove-Item -LiteralPath (Join-Path $base 'boundaries.md') -Force
+    Remove-Item -LiteralPath (Join-Path (Get-OpDir $base) 'autonomy.md') -Force
     New-Item -ItemType Directory -Force -Path (Join-Path (Get-MeDir $base) 'work') | Out-Null
     $noMemory = Invoke-Hook $repo
     Check 'файла базы нет — подача остального цела' { Test-HookText $noMemory 'сверка остатков идёт ночным прогоном' }
@@ -1277,8 +1310,8 @@ try {
     }
 
     Check 'забрать при незакоммиченной правке другого файла — перемотка, правка цела' {
-        Set-Content -LiteralPath (Join-Path $syncBaseA 'boundaries.md') -Value '# Границы', '', 'граница с машины A' -Encoding utf8
-        & git -C $syncBaseA commit -qm 'A: boundaries' -- boundaries.md
+        Set-Content -LiteralPath (Join-Path $syncBaseA 'team.md') -Value '# Правила команды', '', 'правило с машины A' -Encoding utf8
+        & git -C $syncBaseA commit -qm 'A: team' -- team.md
         Invoke-Sync $syncRepoA 'Base' 'Push' | Out-Null
         $product = Join-Path $syncBaseB 'product.md'
         Add-Content -LiteralPath $product -Value 'незакоммиченная правка соседней сессии' -Encoding utf8
@@ -1293,8 +1326,8 @@ try {
     }
 
     Check 'отдание отклонено — забрано rebase и отдано, мержей нет' {
-        Set-Content -LiteralPath (Join-Path $syncBaseA 'boundaries.md') -Value '# Границы', '', 'вторая граница с машины A' -Encoding utf8
-        & git -C $syncBaseA commit -qm 'A: boundaries 2' -- boundaries.md
+        Set-Content -LiteralPath (Join-Path $syncBaseA 'team.md') -Value '# Правила команды', '', 'второе правило с машины A' -Encoding utf8
+        & git -C $syncBaseA commit -qm 'A: team 2' -- team.md
         Invoke-Sync $syncRepoA 'Base' 'Push' | Out-Null
         $decision = Join-Path $syncBaseB 'decisions\sync.md'
         New-Item -ItemType Directory -Force -Path (Split-Path $decision -Parent) | Out-Null
@@ -1450,12 +1483,12 @@ try {
     $copyGate = Join-Path $copyScripts 'commit-gate.ps1'
     $copyMigrate = Join-Path $copyScripts 'base-migrate.ps1'
     $fakeFormat = $kitFormat + 1
-    $stepPath = Join-Path $copyMigrations ('{0:D3}-boundaries-to-limits.ps1' -f $fakeFormat)
+    $stepPath = Join-Path $copyMigrations ('{0:D3}-team-to-limits.ps1' -f $fakeFormat)
     Set-Content -LiteralPath $stepPath -Encoding utf8 -Value @(
         'param([string]$Base)',
         '$to = Join-Path $Base ''limits.md''',
         'if (Test-Path -LiteralPath $to) { return }',
-        'Move-Item -LiteralPath (Join-Path $Base ''boundaries.md'') -Destination $to')
+        'Move-Item -LiteralPath (Join-Path $Base ''team.md'') -Destination $to')
 
     Check 'база в прежнем формате — остановка и команда перевода' {
         $got = Invoke-Hook $migRepo $copyHook
@@ -1479,7 +1512,7 @@ try {
             if ($r.code -eq 0) { return 'скрипт не отказал' }
             if ($r.text -notmatch 'stray\.md') { return "не назван незакоммиченный файл: $($r.text)" }
             if ((Get-MarkerFormat $migBase) -ne $kitFormat) { return 'формат поднят' }
-            if (-not (Test-Path -LiteralPath (Join-Path $migBase 'boundaries.md'))) { return 'шаг всё-таки сделан' }
+            if (-not (Test-Path -LiteralPath (Join-Path $migBase 'team.md'))) { return 'шаг всё-таки сделан' }
             return $null
         }
         finally { Remove-Item -LiteralPath $stray -Force }
@@ -1490,7 +1523,7 @@ try {
         $r = Invoke-BaseMigrate $copyMigrate $migRepo
         if ($r.code -ne 0) { return "код возврата $($r.code): $($r.text)" }
         if ((Get-MarkerFormat $migBase) -ne $fakeFormat) { return "формат $(Get-MarkerFormat $migBase), ожидался $fakeFormat" }
-        if (-not (Test-Path -LiteralPath (Join-Path $migBase 'limits.md')) -or (Test-Path -LiteralPath (Join-Path $migBase 'boundaries.md'))) { return 'шаг не сделан' }
+        if (-not (Test-Path -LiteralPath (Join-Path $migBase 'limits.md')) -or (Test-Path -LiteralPath (Join-Path $migBase 'team.md'))) { return 'шаг не сделан' }
         if ((Get-CommitCount $migBase) -ne $before + 1) { return "коммитов прибавилось $((Get-CommitCount $migBase) - $before), ожидался 1" }
         $dirty = @(& git -C $migBase status --porcelain | Where-Object { $_ })
         if ($dirty.Count) { return "в базе осталось незакоммиченное: $($dirty -join '; ')" }
@@ -1520,12 +1553,12 @@ try {
             'param([string]$Base)',
             'Set-Content -LiteralPath (Join-Path $Base ''half.md'') -Value ''полшага''',
             'Set-Content -LiteralPath (Join-Path $Base ''product.md'') -Value ''испорчено''',
-            'throw ''boundaries.md не опознан''')
+            'throw ''team.md не опознан''')
         $before = Get-CommitCount $migBase
         $product = Get-Content -LiteralPath (Join-Path $migBase 'product.md') -Raw
         $r = Invoke-BaseMigrate $copyMigrate $migRepo
         if ($r.code -eq 0) { return 'скрипт не отказал' }
-        if ($r.text -notmatch 'boundaries\.md не опознан') { return "не названа причина: $($r.text)" }
+        if ($r.text -notmatch 'team\.md не опознан') { return "не названа причина: $($r.text)" }
         if ((Get-MarkerFormat $migBase) -ne $kitFormat) { return 'формат поднят' }
         if ((Get-CommitCount $migBase) -ne $before) { return 'коммит всё-таки сделан' }
         # Концы строк при откате ставит git по настройке машины, сравнивается текст.
@@ -1599,9 +1632,12 @@ try {
         $me = Get-Content -LiteralPath (Join-Path $v1Base 'local\me.json') -Raw | ConvertFrom-Json
         $list = @($me.workspaces)
         if ($list.Count -ne 1 -or $list[0] -ine $v1Repo) { return "в списке копий «$($list -join ', ')», ожидалась одна «$v1Repo»" }
-        foreach ($gone in 'backlog.md', 'work', 'flow', 'agents', 'artifacts\memo.png') {
+        foreach ($gone in 'backlog.md', 'work', 'flow', 'agents', 'artifacts\memo.png', 'boundaries.md') {
             if (Test-Path -LiteralPath (Join-Path $v1Base $gone)) { return "в корне базы остался $gone" }
         }
+        if (-not (Test-Path -LiteralPath (Join-Path $v1Base 'team.md') -PathType Leaf)) { return 'в корне базы нет team.md' }
+        $autonomy = Join-Path (Get-OpDir $v1Base) 'autonomy.md'
+        if (-not (Test-Path -LiteralPath $autonomy) -or (Get-Content -LiteralPath $autonomy -Raw) -notmatch 'Старый проект — рамки') { return 'рамки не переехали в папку оператора' }
         $meDir = Get-MeDir $v1Base
         foreach ($f in 'backlog.md', 'artifacts\memo.png', 'artifacts\both.png') {
             if (-not (Test-Path -LiteralPath (Join-Path $meDir $f) -PathType Leaf)) { return "в личном репозитории нет $f" }
@@ -1646,6 +1682,54 @@ try {
         if (@($me.workspaces).Count -ne 1 -or $me.operator -ne $script:op) { return "в local\me.json: $($me | ConvertTo-Json -Compress)" }
         $got = Invoke-Hook $v2Repo
         return Test-HookText $got 'работа формата 2', 'проект под китом'
+    }
+
+    # Формат 3: рамки одни на команду — <база>\boundaries.md, операторов в people\ уже двое.
+    # Собирается из свежей базы, отведённой к раскладке того формата.
+    $v3Repo = Join-Path $root 'v3'
+    $v3Base = Join-Path $root 'base-v3'
+    New-TestRepo $v3Repo
+    Invoke-BaseInit $v3Base | Out-Null
+    & pwsh -NoProfile -File $link -Path $v3Repo -Base $v3Base | Out-Null
+    Set-MarkerFormat $v3Base 3
+    Remove-Item -LiteralPath (Join-Path (Get-OpDir $v3Base) 'autonomy.md'), (Join-Path $v3Base 'team.md') -Force
+    Set-Content -LiteralPath (Join-Path $v3Base 'boundaries.md') -Encoding utf8 -Value '# Проект — рамки', '', 'общая рамка формата 3'
+    $v3Other = Join-Path $v3Base 'people\other'
+    New-Item -ItemType Directory -Force -Path (Join-Path $v3Other 'flow') | Out-Null
+    Set-Content -LiteralPath (Join-Path $v3Other 'flow\scenarios.md') -Value '# Сценарии коллеги' -Encoding utf8
+    Set-Content -LiteralPath (Join-Path $v3Other 'autonomy.md') -Value '# Свои рамки коллеги' -Encoding utf8
+    Commit-All $v3Base 'формат 3'
+
+    Check 'перевод с формата 3 — у коллеги уже другие рамки: отказ, база не тронута' {
+        $r = Invoke-BaseMigrate $v1Migrate $v3Repo
+        if ($r.code -eq 0) { return 'скрипт не отказал' }
+        if ($r.text -notmatch 'people\\other\\autonomy\.md') { return "не назван файл коллеги: $($r.text)" }
+        if ((Get-MarkerFormat $v3Base) -ne 3) { return 'формат поднят' }
+        if (-not (Test-Path -LiteralPath (Join-Path $v3Base 'boundaries.md'))) { return 'boundaries.md всё-таки убран' }
+        $dirty = @(& git -C $v3Base status --porcelain --untracked-files=all | Where-Object { $_ })
+        if ($dirty.Count) { return "в базе осталось: $($dirty -join '; ')" }
+        return $null
+    }
+
+    & git -C $v3Base rm -q -- people/other/autonomy.md
+    & git -C $v3Base commit -qm 'рамки коллеги убраны' | Out-Null
+
+    Check 'перевод с формата 3 — прежние рамки у каждого оператора, в корне team.md' {
+        $r = Invoke-BaseMigrate $v1Migrate $v3Repo
+        if ($r.code -ne 0) { return "код возврата $($r.code): $($r.text)" }
+        if ((Get-MarkerFormat $v3Base) -ne $kitFormat) { return "формат $(Get-MarkerFormat $v3Base), ожидался $kitFormat" }
+        if (Test-Path -LiteralPath (Join-Path $v3Base 'boundaries.md')) { return 'в корне базы остался boundaries.md' }
+        if (-not (Test-Path -LiteralPath (Join-Path $v3Base 'team.md') -PathType Leaf)) { return 'в корне базы нет team.md' }
+        foreach ($dir in (Get-OpDir $v3Base), $v3Other) {
+            $autonomy = Join-Path $dir 'autonomy.md'
+            if (-not (Test-Path -LiteralPath $autonomy) -or (Get-Content -LiteralPath $autonomy -Raw) -notmatch 'общая рамка формата 3') { return "нет прежних рамок в $autonomy" }
+        }
+        $dirty = @(& git -C $v3Base status --porcelain --untracked-files=all | Where-Object { $_ })
+        if ($dirty.Count) { return "в базе осталось незакоммиченное: $($dirty -join '; ')" }
+        $got = Invoke-Hook $v3Repo
+        $fails = @($got -split "`n" | Where-Object { $_ -match '^- \*\*FAIL\*\*' })
+        if ($fails.Count) { return "сверка после перевода красная: $($fails -join ' | ')" }
+        return Test-HookText $got 'общая рамка формата 3', 'people/op/autonomy.md'
     }
 
     # Дальше — не стенд, а сам репозиторий кита.

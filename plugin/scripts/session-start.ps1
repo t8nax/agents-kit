@@ -19,10 +19,10 @@ function Emit([string]$Text) {
 # Знание базы подаётся содержимым: его читает каждая сессия. Список — base-check.ps1.
 function Read-KitBaseKnowledge([string]$BaseDir) {
     $blocks = @()
-    foreach ($name in $script:KitServedFiles) {
-        $text = Read-KitMarkdown (Join-Path $BaseDir $name)
+    foreach ($file in @(Get-KitServedFiles $BaseDir)) {
+        $text = Read-KitMarkdown $file.path
         if (-not $text) { continue }
-        $blocks += "**$name**`n`n$text"
+        $blocks += "**$($file.label)**`n`n$text"
     }
     if (-not $blocks) { return '' }
 
@@ -218,13 +218,13 @@ try {
 "@
         }
 
-        # Флоу, субагенты, память и бэклог — оператора: без его имени и личного репозитория
-        # сессия взяла бы чужой порядок работы или писала бы память мимо git.
+        # Рамки, флоу, субагенты, память и бэклог — оператора: без его имени и личного репозитория
+        # сессия взяла бы чужую меру свободы и чужой порядок работы или писала бы память мимо git.
         'Unnamed' {
             Emit @"
 # agents-kit — оператор на этой машине не назван
 
-База ``$($state.base)`` связана с ``$($state.workspace)``, но на этой машине не названо, чей это оператор: чьи флоу и субагенты брать и где память и бэклог, не опознать.
+База ``$($state.base)`` связана с ``$($state.workspace)``, но на этой машине не названо, чей это оператор: чьи рамки, флоу и субагенты брать и где память и бэклог, не опознать.
 
 **Работа со знанием остановлена.** Спросить оператора его имя в базе по разделу «Оператор» раскладки базы ``$(ConvertTo-KitPath (Join-Path $PSScriptRoot '..\reference\base-layout.md'))`` и завести: ``$(Get-KitOperatorCommand $state.base $null)``. После — новая сессия: ``/clear``.
 "@
@@ -274,7 +274,7 @@ try {
 # agents-kit — проект под китом
 
 $nameLine- База знаний: ``$($state.base)``
-- Оператор: ``$($state.operator)``, его флоу и субагенты — ``$($state.people)``
+- Оператор: ``$($state.operator)``, его рамки, флоу и субагенты — ``$($state.people)``
 - Личный репозиторий: ``$($state.personal)`` — бэклог, память задач и их артефакты
 - Рабочая копия: ``$($state.worktree)``$mainLine$repoLine$layoutLine
 
