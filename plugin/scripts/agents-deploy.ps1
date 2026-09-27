@@ -1,6 +1,6 @@
-# agents-kit: довезти субагентов оператора из его папки в базе в рабочую копию — файлы каталога
-# субагентов копии и строки, которыми они спрятаны от git проекта. Субагенты коллег не
-# довозятся: их зовут этапы чужого флоу.
+# agents-kit: довезти субагентов оператора из его личного репозитория в рабочую копию — файлы
+# каталога субагентов копии и строки, которыми они спрятаны от git проекта. Выложенные в базе
+# субагенты не довозятся: их зовут этапы выложенного флоу, а не того, по которому работает агент.
 #   pwsh -NoProfile -File scripts\agents-deploy.ps1 [-Path <копия>]
 #
 # Файл кладётся один в один: субагент — формат Claude Code, и кит его не разбирает.
@@ -54,7 +54,7 @@ function Set-KitAgentExcludeBlock([string]$ExcludePath, $Marks, [string[]]$Lines
 
 $target = Get-KitAgentDir $state.worktree
 $sources = [ordered]@{}
-foreach ($file in @(Get-ChildItem -LiteralPath (Join-Path $state.people 'agents') -Filter '*.md' -File -ErrorAction SilentlyContinue | Sort-Object Name)) {
+foreach ($file in @(Get-ChildItem -LiteralPath (Join-Path $state.personal 'agents') -Filter '*.md' -File -ErrorAction SilentlyContinue | Sort-Object Name)) {
     $sources[$file.Name] = $file.FullName
 }
 
@@ -72,7 +72,7 @@ foreach ($name in @($sources.Keys)) {
     $dst = Join-Path $target $name
     if (Test-Path -LiteralPath $dst -PathType Leaf) {
         if ((Get-KitAgentText $dst) -ceq (Get-KitAgentText $sources[$name])) { $kept++; continue }
-        if ($PSCmdlet.ShouldProcess($dst, 'обновить субагента по базе')) {
+        if ($PSCmdlet.ShouldProcess($dst, 'обновить субагента по личному репозиторию')) {
             Copy-Item -LiteralPath $sources[$name] -Destination $dst -Force
         }
         $updated.Add($name)
@@ -83,19 +83,19 @@ foreach ($name in @($sources.Keys)) {
             New-Item -ItemType Directory -Force -Path $target | Out-Null
         }
     }
-    if ($PSCmdlet.ShouldProcess($dst, 'довезти субагента из базы')) {
+    if ($PSCmdlet.ShouldProcess($dst, 'довезти субагента из личного репозитория')) {
         Copy-Item -LiteralPath $sources[$name] -Destination $dst -Force
     }
     $placed.Add($name)
 }
 
-# Ушедший из базы уходит и из копии: иначе им отработала бы сессия, у которой он давно снят.
+# Ушедший из личного репозитория уходит и из копии: иначе им отработала бы сессия, у которой он давно снят.
 foreach ($name in $deployed) {
     if ($sources.Contains($name)) { continue }
     if ($tracked -contains $name) { continue }
     $dst = Join-Path $target $name
     if (-not (Test-Path -LiteralPath $dst -PathType Leaf)) { continue }
-    if ($PSCmdlet.ShouldProcess($dst, 'убрать субагента, которого в базе нет')) {
+    if ($PSCmdlet.ShouldProcess($dst, 'убрать субагента, которого в личном репозитории нет')) {
         Remove-Item -LiteralPath $dst -Force
     }
     $removed.Add($name)
@@ -111,7 +111,7 @@ if ($PSCmdlet.ShouldProcess($excludePath, 'переписать блок кит�
 }
 
 Write-Host "Рабочая копия: $($state.worktree)"
-Write-Host "Субагенты:     $(Join-Path $state.people 'agents')"
+Write-Host "Субагенты:     $(Join-Path $state.personal 'agents')"
 foreach ($name in $placed)  { Write-Host "  довезён:  $name" }
 foreach ($name in $updated) { Write-Host "  обновлён: $name" }
 foreach ($name in $removed) { Write-Host "  убран:    $name" }

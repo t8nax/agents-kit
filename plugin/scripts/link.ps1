@@ -63,7 +63,7 @@ if (-not $Base) {
             exit 1
         }
         'Unnamed' {
-            Write-Host "Оператор:      на этой машине не назван — чьи рамки, флоу и субагенты, не опознать" -ForegroundColor Red
+            Write-Host "Оператор:      на этой машине не назван — чья папка в базе, не опознать" -ForegroundColor Red
             Write-Host "               завести: $(Get-KitOperatorCommand $state.base $null)"
             exit 1
         }
@@ -73,8 +73,8 @@ if (-not $Base) {
             exit 1
         }
         'Linked' {
-            Write-Host "Оператор:      $($state.operator), папка $($state.people)"
-            Write-Host "Личный:        $($state.personal)"
+            Write-Host "Оператор:      $($state.operator), выложенное для коллег — $($state.people)"
+            Write-Host "Личный:        $($state.personal) — рамки, флоу, субагенты, бэклог, память"
             Write-Host "База:          связь двусторонняя, формат $($state.format)" -ForegroundColor Green
             exit 0
         }
@@ -147,7 +147,7 @@ Write-Host "Указатель поставлен: $workspace → $baseN (клю
 if ($state.base -and $state.base -ine $baseN) {
     Write-Host "Прежний указатель вёл в $($state.base) — если та база больше не нужна, её запись об этой копии в local\me.json стоит убрать руками." -ForegroundColor Yellow
 }
-# Субагенты оператора довозятся сразу за связью: у второй копии проекта они уже есть в базе,
+# Субагенты оператора довозятся сразу за связью: у второй копии проекта они уже есть в личном репозитории,
 # и без раскладки этап звал бы в ней исполнителя, которого в копии нет. Не вышло — связь
 # всё равно поднята, и сказать об этом важнее, чем упасть. Места оператора на машине нет —
 # раскладывать нечьих субагентов нельзя, и дальше идёт base-init.ps1.

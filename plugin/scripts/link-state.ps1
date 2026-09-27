@@ -178,9 +178,10 @@ function Get-KitWorkMemoryPath([string]$Root, [string]$Worktree) {
     return ConvertTo-KitPath (Join-Path $dir ($slug + '.md'))
 }
 
-# Личный репозиторий оператора — local\me базы, свой git: бэклог, память задач и их артефакты.
-# В local\, чтобы общая база его не видела: коллегам память и бэклог не нужны, а коммит памяти
-# на каждом шаге шёл бы в общий remote.
+# Личный репозиторий оператора — local\me базы, свой git: рамки агента, флоу, субагенты, бэклог,
+# память задач и их артефакты. В local\, чтобы общая база его не видела: то, по чему работает агент
+# оператора, в общей базе поправил бы любой, у кого есть push в неё; коллегам память и бэклог
+# не нужны, а коммит памяти на каждом шаге шёл бы в общий remote.
 function Get-KitPersonalDir([string]$BaseDir) {
     if (-not $BaseDir) { return $null }
     return ConvertTo-KitPath (Join-Path $BaseDir 'local\me')
@@ -211,7 +212,8 @@ function Test-KitOperatorName([string]$Name) {
     return [bool]($Name -and $Name -cmatch '^[a-z0-9]+(-[a-z0-9]+)*$')
 }
 
-# Папка оператора в общей базе — его рамки, флоу и субагенты.
+# Папка оператора в общей базе — флоу и субагенты, которые он выложил для коллег. Агент по ней
+# не работает; она есть и пустой: по ней видно, что имя занято.
 function Get-KitOperatorDir([string]$BaseDir, [string]$Name) {
     if (-not $BaseDir -or -not (Test-KitOperatorName $Name)) { return $null }
     return ConvertTo-KitPath (Join-Path $BaseDir ('people\' + $Name))
@@ -373,8 +375,8 @@ function Get-KitOperatorName([string]$BaseDir) {
     return $name
 }
 
-# Имя пишется один раз на машину: другое имя поверх названного подменило бы, чьи рамки,
-# флоу и субагенты видит каждая копия этой машины.
+# Имя пишется один раз на машину: другое имя поверх названного подменило бы, в чью папку
+# people\ эта машина выкладывает флоу.
 function Set-KitOperatorName([string]$BaseDir, [string]$Name) {
     if (-not (Test-KitOperatorName $Name)) { throw "имя оператора «$Name» не по форме — латиница в нижнем регистре, цифры и дефис между ними: b-ignatyev" }
     $list = Get-KitWorkspaceList $BaseDir
@@ -411,8 +413,9 @@ function Test-KitWorkspaceKnown([string]$BaseDir, [string]$Workspace) {
 #   Outdated    формат базы старше того, что ждёт кит, — перевести
 #   Newer       базу перевёл кит новее этого — обновить кит
 #   Unlisted    база есть, но на этой машине эту копию не числит своей
-#   Unnamed     на этой машине оператор базы не назван — чьи рамки, флоу и субагенты, не опознать
-#   NoPersonal  личного репозитория оператора на этой машине нет — памяти и бэклогу негде жить
+#   Unnamed     на этой машине оператор базы не назван — чья папка в people\, не опознать
+#   NoPersonal  личного репозитория оператора на этой машине нет — рамкам, флоу, субагентам, памяти
+#               и бэклогу негде жить
 #   Linked      всё сошлось, формат тот, что ждёт кит
 function Get-KitLinkState([string]$Dir) {
     $state = [ordered]@{

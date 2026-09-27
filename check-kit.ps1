@@ -158,8 +158,10 @@ function Invoke-BaseInit([string]$Dir, [string]$Prefix = 'ORD', [string]$Operato
     return [pscustomobject]@{ code = $LASTEXITCODE; text = ($out -join "`n") }
 }
 
-# Папка оператора стенда и личный репозиторий в базе.
-function Get-OpDir([string]$Base) { return (Join-Path $Base "people\$script:op") }
+# Где стенд держит рамки, флоу и субагентов оператора — личный репозиторий; папка оператора
+# в базе — выложенное для коллег.
+function Get-OpDir([string]$Base) { return (Join-Path $Base 'local\me') }
+function Get-PeopleDir([string]$Base, [string]$Name = $script:op) { return (Join-Path $Base "people\$Name") }
 function Get-MeDir([string]$Base) { return (Join-Path $Base 'local\me') }
 
 function Commit-All([string]$Repo, [string]$Message) {
@@ -300,7 +302,7 @@ try {
     Check 'база заведена — каркас, папка оператора, личный репозиторий и коммиты' {
         $r = Invoke-BaseInit $base
         if ($r.code -ne 0) { return "код возврата $($r.code): $($r.text)" }
-        foreach ($f in 'product.md', 'team.md', '.gitignore', 'agents-kit.json', "people\$script:op\autonomy.md", "people\$script:op\flow\scenarios.md", 'local\me\backlog.md', 'local\me.json') {
+        foreach ($f in 'product.md', 'team.md', '.gitignore', 'agents-kit.json', "people\$script:op\flow\scenarios.md", 'local\me\autonomy.md', 'local\me\flow\scenarios.md', 'local\me\backlog.md', 'local\me.json') {
             if (-not (Test-Path -LiteralPath (Join-Path $base $f) -PathType Leaf)) { return "нет файла $f" }
         }
         foreach ($f in 'backlog.md', 'flow', 'autonomy.md', 'boundaries.md') {
@@ -423,21 +425,21 @@ try {
     $decisionsDir = Join-Path $base 'decisions'
     Check 'решений нет — сессии названо, куда их заводить' { Test-HookText $linked 'решений пока нет' }
 
-    # Рамки — свои: из папок операторов подаётся только папка оператора этой машины.
-    Check 'правила команды и рамки своего оператора — в контексте, рамки коллеги — нет' {
+    # Рамки — свои: подаются из личного репозитория, а лежащее в people\ не подаётся.
+    Check 'правила команды и рамки своего оператора — в контексте, рамки из people\ — нет' {
         $team = Join-Path $base 'team.md'
         $own = Join-Path (Get-OpDir $base) 'autonomy.md'
-        $other = Join-Path $base 'people\other\autonomy.md'
+        $other = Join-Path (Get-PeopleDir $base) 'autonomy.md'
         $saved = @{}
         foreach ($f in $team, $own) { $saved[$f] = Get-Content -LiteralPath $f -Raw }
         Set-Content -LiteralPath $team -Encoding utf8 -Value '# Правила команды', '', 'без ревью не мержим'
         Set-Content -LiteralPath $own -Encoding utf8 -Value '# Рамки', '', 'миграции схемы решает сам'
         New-Item -ItemType Directory -Force -Path (Split-Path $other -Parent) | Out-Null
         Set-Content -LiteralPath $other -Encoding utf8 -Value '# Рамки', '', 'рамка коллеги вне подачи'
-        try { return ExpectText $repo 'без ревью не мержим', 'миграции схемы решает сам', 'people/op/autonomy.md' -Lacks 'рамка коллеги вне подачи' }
+        try { return ExpectText $repo 'без ревью не мержим', 'миграции схемы решает сам', 'local/me/autonomy.md' -Lacks 'рамка коллеги вне подачи' }
         finally {
             foreach ($f in $team, $own) { Set-Content -LiteralPath $f -Value $saved[$f] -Encoding utf8 -NoNewline }
-            Remove-Item -LiteralPath (Split-Path $other -Parent) -Recurse -Force
+            Remove-Item -LiteralPath $other -Force
         }
     }
 
@@ -447,9 +449,9 @@ try {
         $saved = Get-Content -LiteralPath $own -Raw
         Set-Content -LiteralPath $own -Encoding utf8 -Value (@('# Рамки') + @(1..31 | ForEach-Object { "- строка $_" }))
         try {
-            $problem = ExpectText $repo 'people/op/autonomy.md', 'при потолке 30'
+            $problem = ExpectText $repo 'local/me/autonomy.md', 'при потолке 30'
             if ($problem) { return $problem }
-            $reason = Invoke-CommitGate $repo "git -C `"$base`" commit -m x -- `"$own`""
+            $reason = Invoke-CommitGate $repo "git -C `"$(Get-MeDir $base)`" commit -m x -- `"$own`""
             if ($reason -notmatch 'при потолке 30') { return "гейт не остановил: «$reason»" }
             return $null
         }
@@ -759,11 +761,11 @@ try {
         return $null
     }
 
-    Check 'флоу в своей папке с той же ошибкой — гейт коммита в базу останавливает' {
+    Check 'свой флоу с той же ошибкой — гейт коммита в личный репозиторий останавливает' {
         $own = Join-Path (Get-OpDir $renBase) 'flow\scenarios.md'
         $saved = Get-Content -LiteralPath $own -Raw
         Set-Content -LiteralPath $own -Encoding utf8 -Value '# Сценарии', '', '## свой', '1. [Нет такого](stages/none.md)'
-        $reason = Invoke-CommitGate $renRepo "git -C `"$renBase`" commit -m свой -- `"$own`""
+        $reason = Invoke-CommitGate $renRepo "git -C `"$(Get-MeDir $renBase)`" commit -m свой -- `"$own`""
         Set-Content -LiteralPath $own -Encoding utf8 -Value $saved -NoNewline
         if ($reason -notmatch 'такого файла нет') { return "гейт не остановил: «$reason»" }
         return $null
@@ -1136,39 +1138,39 @@ try {
     }
 
     # Субагенты оператора: гоняется настоящий скрипт раскладки. Проверяется то, чем раскладка
-    # отличается от копирования файла, — git проекта её не видит, база верна, чужое не тронуто.
+    # отличается от копирования файла, — git проекта её не видит, личный репозиторий верен, чужое не тронуто.
     $agentsDir = Join-Path (Get-OpDir $base) 'agents'
     $copyAgents = Join-Path (Join-Path $repo '.claude') 'agents'
     New-Item -ItemType Directory -Force -Path $agentsDir | Out-Null
     $scout = Join-Path $agentsDir 'scout.md'
     $scoutLines = @('---', 'name: scout', 'description: "разведчик"', '---', '', 'разведать')
     Set-Content -LiteralPath $scout -Encoding utf8 -Value $scoutLines
-    # Субагент коллеги лежит в его папке и в эту копию не едет.
-    $alienAgents = Join-Path $base 'people\x\agents'
+    # Выложенный в people\ субагент в копию не едет: агент работает по личному репозиторию.
+    $alienAgents = Join-Path (Get-PeopleDir $base) 'agents'
     New-Item -ItemType Directory -Force -Path $alienAgents | Out-Null
     Set-Content -LiteralPath (Join-Path $alienAgents 'alien.md') -Encoding utf8 -Value '---', 'name: alien', '---', '', 'чужой'
 
-    Check 'субагент оператора довезён в копию и спрятан от git проекта, субагент коллеги — нет' {
+    Check 'субагент оператора довезён в копию и спрятан от git проекта, выложенный в people\ — нет' {
         $r = Invoke-AgentsDeploy $repo
         if ($r.code -ne 0) { return "код возврата $($r.code): $($r.text)" }
-        if (Test-Path -LiteralPath (Join-Path $copyAgents 'alien.md')) { return 'довезён субагент коллеги' }
+        if (Test-Path -LiteralPath (Join-Path $copyAgents 'alien.md')) { return 'довезён выложенный субагент' }
         $dst = Join-Path $copyAgents 'scout.md'
         if (-not (Test-Path -LiteralPath $dst -PathType Leaf)) { return 'файла в копии нет' }
-        if ((Get-Content -LiteralPath $dst -Raw) -cne (Get-Content -LiteralPath $scout -Raw)) { return 'файл копии не совпал с базой' }
+        if ((Get-Content -LiteralPath $dst -Raw) -cne (Get-Content -LiteralPath $scout -Raw)) { return 'файл копии не совпал с личным репозиторием' }
         $dirty = @(& git -C $repo status --porcelain | Where-Object { $_ })
         if ($dirty.Count) { return "git копии видит разложенное: $($dirty -join '; ')" }
         return $null
     }
 
-    # Копия — производная: правка в ней не знание, а расхождение, и верна база.
-    Check 'правка в копии — находка сверки, прогон возвращает базу' {
-        Add-Content -LiteralPath (Join-Path $copyAgents 'scout.md') -Value 'правка мимо базы'
-        $problem = ExpectText $repo 'в копии разошлись с базой'
+    # Копия — производная: правка в ней — расхождение, и верен личный репозиторий.
+    Check 'правка в копии — находка сверки, прогон возвращает личный репозиторий' {
+        Add-Content -LiteralPath (Join-Path $copyAgents 'scout.md') -Value 'правка мимо личного репозитория'
+        $problem = ExpectText $repo 'в копии разошлись с личным репозиторием'
         if ($problem) { return $problem }
         $r = Invoke-AgentsDeploy $repo
         if ($r.code -ne 0) { return "код возврата $($r.code): $($r.text)" }
-        if ((Get-Content -LiteralPath (Join-Path $copyAgents 'scout.md') -Raw) -cne (Get-Content -LiteralPath $scout -Raw)) { return 'копия не возвращена к базе' }
-        return ExpectNoText $repo 'в копии разошлись с базой'
+        if ((Get-Content -LiteralPath (Join-Path $copyAgents 'scout.md') -Raw) -cne (Get-Content -LiteralPath $scout -Raw)) { return 'копия не возвращена к личному репозиторию' }
+        return ExpectNoText $repo 'в копии разошлись с личным репозиторием'
     }
 
     Check 'имя занято отслеживаемым файлом проекта — файл проекта не тронут' {
@@ -1176,14 +1178,14 @@ try {
         Set-Content -LiteralPath $own -Encoding utf8 -Value '---', 'name: guard', '---', '', 'файл проекта'
         & git -C $repo add -f -- '.claude/agents/guard.md' 2>$null | Out-Null
         & git -C $repo commit -qm 'агент проекта' 2>$null | Out-Null
-        Set-Content -LiteralPath (Join-Path $agentsDir 'guard.md') -Encoding utf8 -Value '---', 'name: guard', '---', '', 'файл базы'
+        Set-Content -LiteralPath (Join-Path $agentsDir 'guard.md') -Encoding utf8 -Value '---', 'name: guard', '---', '', 'файл личного репозитория'
         $r = Invoke-AgentsDeploy $repo
         if ($r.code -ne 0) { return "код возврата $($r.code): $($r.text)" }
         if ((Get-Content -LiteralPath $own -Raw) -notmatch 'файл проекта') { return 'файл проекта перезаписан' }
         return ExpectText $repo 'имя занято отслеживаемым файлом проекта'
     }
 
-    Check 'снятый из базы уходит из копии, файл проекта остаётся' {
+    Check 'снятый из личного репозитория уходит из копии, файл проекта остаётся' {
         Remove-Item -LiteralPath (Join-Path $agentsDir 'guard.md') -Force
         $problem = ExpectNoText $repo 'остались в копии от прежней раскладки'
         if ($problem) { return $problem }
@@ -1200,7 +1202,7 @@ try {
     }
 
     # Новой копии субагенты нужны с первой секунды: без них этап зовёт того, кого в ней нет.
-    Check 'заведённая рабочая копия получает субагентов базы' {
+    Check 'заведённая рабочая копия получает субагентов оператора' {
         $out = (& pwsh -NoProfile -File $script:wtAdd -Path $repo -Name 'agents-copy' 2>&1 | Out-String)
         if ($LASTEXITCODE -ne 0) { return "код возврата $LASTEXITCODE : $out" }
         $fresh = Join-Path (Split-Path $repo -Parent) 'agents-copy'
@@ -1211,8 +1213,8 @@ try {
         return $null
     }
 
-    # Связывание копии — тот же момент раскладки: у второй копии проекта субагенты в базе уже есть.
-    Check 'связанная копия получает субагентов базы' {
+    # Связывание копии — тот же момент раскладки: у второй копии проекта субагенты в личном репозитории уже есть.
+    Check 'связанная копия получает субагентов оператора' {
         $late = Join-Path $root 'late'
         New-TestRepo $late
         $out = (& pwsh -NoProfile -File $link -Path $late -Base $base 2>&1 | Out-String)
@@ -1244,7 +1246,7 @@ try {
     }
 
     # Укрытие слетает и мимо кита: файл исключений почистили руками, копия стоит на старом ките.
-    # Файл при этом довезён и сверен с базой — назвать пропажу больше нечему.
+    # Файл при этом довезён и сверен с личным репозиторием — назвать пропажу больше нечему.
     Check 'укрытие слетело — сверка называет' {
         $exclude = Join-Path (Join-Path (Join-Path $repo '.git') 'info') 'exclude'
         Set-Content -LiteralPath $exclude -Encoding utf8 -Value ''
@@ -1637,7 +1639,7 @@ try {
     & git -C $v1Base rm -q -- $v1Foreign
     & git -C $v1Base commit -qm 'задача другой машины закрыта' | Out-Null
 
-    Check 'перевод с формата 1 — бэклог и память в личном репозитории, флоу и субагенты в папке оператора' {
+    Check 'перевод с формата 1 — бэклог, память, рамки, флоу и субагенты в личном репозитории, флоу выложен' {
         $before = Get-CommitCount $v1Base
         $r = Invoke-BaseMigrate $v1Migrate $v1Repo
         if ($r.code -ne 0) { return "код возврата $($r.code): $($r.text)" }
@@ -1653,15 +1655,17 @@ try {
         }
         if (-not (Test-Path -LiteralPath (Join-Path $v1Base 'team.md') -PathType Leaf)) { return 'в корне базы нет team.md' }
         $autonomy = Join-Path (Get-OpDir $v1Base) 'autonomy.md'
-        if (-not (Test-Path -LiteralPath $autonomy) -or (Get-Content -LiteralPath $autonomy -Raw) -notmatch 'Старый проект — рамки') { return 'рамки не переехали в папку оператора' }
+        if (-not (Test-Path -LiteralPath $autonomy) -or (Get-Content -LiteralPath $autonomy -Raw) -notmatch 'Старый проект — рамки') { return 'рамки не переехали в личный репозиторий' }
         $meDir = Get-MeDir $v1Base
         foreach ($f in 'backlog.md', 'artifacts\memo.png', 'artifacts\both.png') {
             if (-not (Test-Path -LiteralPath (Join-Path $meDir $f) -PathType Leaf)) { return "в личном репозитории нет $f" }
         }
         if (-not (Test-Path -LiteralPath (Join-Path $v1Base 'artifacts\both.png') -PathType Leaf)) { return 'артефакт, на который ссылается знание, ушёл из базы' }
         foreach ($f in 'flow\scenarios.md', 'agents\scout.md') {
-            if (-not (Test-Path -LiteralPath (Join-Path (Get-OpDir $v1Base) $f) -PathType Leaf)) { return "в папке оператора нет $f" }
+            if (-not (Test-Path -LiteralPath (Join-Path (Get-OpDir $v1Base) $f) -PathType Leaf)) { return "в личном репозитории нет $f" }
+            if (-not (Test-Path -LiteralPath (Join-Path (Get-PeopleDir $v1Base) $f) -PathType Leaf)) { return "в папке оператора не выложен $f" }
         }
+        if (Test-Path -LiteralPath (Join-Path (Get-PeopleDir $v1Base) 'autonomy.md')) { return 'рамки остались в папке оператора' }
         if ((Get-CommitCount $v1Base) -ne $before + $kitFormat - 1) { return "коммитов прибавилось $((Get-CommitCount $v1Base) - $before), ожидалось $($kitFormat - 1)" }
         foreach ($r2 in $v1Base, $meDir) {
             $dirty = @(& git -C $r2 status --porcelain --untracked-files=all | Where-Object { $_ })
@@ -1700,15 +1704,17 @@ try {
         return Test-HookText $got 'работа формата 2', 'проект под китом'
     }
 
-    # Формат 3: рамки одни на команду — <база>\boundaries.md, операторов в people\ уже двое.
-    # Собирается из свежей базы, отведённой к раскладке того формата.
+    # Формат 3: рамки одни на команду — <база>\boundaries.md, операторов в people\ уже двое, флоу
+    # в папке оператора. Собирается из свежей базы, отведённой к раскладке того формата.
     $v3Repo = Join-Path $root 'v3'
     $v3Base = Join-Path $root 'base-v3'
     New-TestRepo $v3Repo
     Invoke-BaseInit $v3Base | Out-Null
     & pwsh -NoProfile -File $link -Path $v3Repo -Base $v3Base | Out-Null
     Set-MarkerFormat $v3Base 3
-    Remove-Item -LiteralPath (Join-Path (Get-OpDir $v3Base) 'autonomy.md'), (Join-Path $v3Base 'team.md') -Force
+    & git -C (Get-MeDir $v3Base) rm -rq -- autonomy.md flow
+    & git -C (Get-MeDir $v3Base) commit -qm 'формат 3' | Out-Null
+    Remove-Item -LiteralPath (Join-Path $v3Base 'team.md') -Force
     Set-Content -LiteralPath (Join-Path $v3Base 'boundaries.md') -Encoding utf8 -Value '# Проект — рамки', '', 'общая рамка формата 3'
     $v3Other = Join-Path $v3Base 'people\other'
     New-Item -ItemType Directory -Force -Path (Join-Path $v3Other 'flow') | Out-Null
@@ -1730,22 +1736,47 @@ try {
     & git -C $v3Base rm -q -- people/other/autonomy.md
     & git -C $v3Base commit -qm 'рамки коллеги убраны' | Out-Null
 
-    Check 'перевод с формата 3 — прежние рамки у каждого оператора, в корне team.md' {
+    # Шаг 4 даёт рамки каждому оператору, шаг 6 переносит в личный репозиторий только свою папку:
+    # рамки и флоу коллеги уехали бы к переводящему.
+    Check 'перевод с формата 3 — рамки у каждого оператора, на папке коллеги перевод встаёт' {
         $r = Invoke-BaseMigrate $v1Migrate $v3Repo
-        if ($r.code -ne 0) { return "код возврата $($r.code): $($r.text)" }
-        if ((Get-MarkerFormat $v3Base) -ne $kitFormat) { return "формат $(Get-MarkerFormat $v3Base), ожидался $kitFormat" }
+        if ($r.code -eq 0) { return 'скрипт не отказал на папке коллеги' }
+        if ($r.text -notmatch 'people\\other') { return "не названа папка коллеги: $($r.text)" }
+        if ((Get-MarkerFormat $v3Base) -ne 5) { return "формат $(Get-MarkerFormat $v3Base), ожидался 5 — шаг 6 откачен, прежние сделаны" }
         if (Test-Path -LiteralPath (Join-Path $v3Base 'boundaries.md')) { return 'в корне базы остался boundaries.md' }
         if (-not (Test-Path -LiteralPath (Join-Path $v3Base 'team.md') -PathType Leaf)) { return 'в корне базы нет team.md' }
-        foreach ($dir in (Get-OpDir $v3Base), $v3Other) {
+        foreach ($dir in (Get-PeopleDir $v3Base), $v3Other) {
             $autonomy = Join-Path $dir 'autonomy.md'
             if (-not (Test-Path -LiteralPath $autonomy) -or (Get-Content -LiteralPath $autonomy -Raw) -notmatch 'общая рамка формата 3') { return "нет прежних рамок в $autonomy" }
         }
-        $dirty = @(& git -C $v3Base status --porcelain --untracked-files=all | Where-Object { $_ })
-        if ($dirty.Count) { return "в базе осталось незакоммиченное: $($dirty -join '; ')" }
+        foreach ($r2 in $v3Base, (Get-MeDir $v3Base)) {
+            $dirty = @(& git -C $r2 status --porcelain --untracked-files=all | Where-Object { $_ })
+            if ($dirty.Count) { return "в $r2 осталось незакоммиченное: $($dirty -join '; ')" }
+        }
+        return $null
+    }
+
+    & git -C $v3Base rm -rq -- people/other
+    & git -C $v3Base commit -qm 'папка коллеги убрана' | Out-Null
+
+    Check 'перевод с формата 3 — без папки коллеги рамки и флоу в личном репозитории, флоу выложен' {
+        $r = Invoke-BaseMigrate $v1Migrate $v3Repo
+        if ($r.code -ne 0) { return "код возврата $($r.code): $($r.text)" }
+        if ((Get-MarkerFormat $v3Base) -ne $kitFormat) { return "формат $(Get-MarkerFormat $v3Base), ожидался $kitFormat" }
+        $autonomy = Join-Path (Get-OpDir $v3Base) 'autonomy.md'
+        if (-not (Test-Path -LiteralPath $autonomy) -or (Get-Content -LiteralPath $autonomy -Raw) -notmatch 'общая рамка формата 3') { return "нет прежних рамок в $autonomy" }
+        if (Test-Path -LiteralPath (Join-Path (Get-PeopleDir $v3Base) 'autonomy.md')) { return 'рамки остались в папке оператора' }
+        foreach ($dir in (Get-OpDir $v3Base), (Get-PeopleDir $v3Base)) {
+            if (-not (Test-Path -LiteralPath (Join-Path $dir 'flow\scenarios.md') -PathType Leaf)) { return "нет флоу в $dir" }
+        }
+        foreach ($r2 in $v3Base, (Get-MeDir $v3Base)) {
+            $dirty = @(& git -C $r2 status --porcelain --untracked-files=all | Where-Object { $_ })
+            if ($dirty.Count) { return "в $r2 осталось незакоммиченное: $($dirty -join '; ')" }
+        }
         $got = Invoke-Hook $v3Repo
         $fails = @($got -split "`n" | Where-Object { $_ -match '^- \*\*FAIL\*\*' })
         if ($fails.Count) { return "сверка после перевода красная: $($fails -join ' | ')" }
-        return Test-HookText $got 'общая рамка формата 3', 'people/op/autonomy.md'
+        return Test-HookText $got 'общая рамка формата 3', 'local/me/autonomy.md'
     }
 
     # Формат 4: tracker.md свободным текстом. Собирается из свежей базы.
@@ -1772,6 +1803,93 @@ try {
         $fails = @($got -split "`n" | Where-Object { $_ -match '^- \*\*FAIL\*\*' })
         if ($fails.Count) { return "сверка после перевода красная: $($fails -join ' | ')" }
         return Test-HookText $got 'проект под китом'
+    }
+
+    # Флоу выкладывают и берут скриптом: агент работает по личному репозиторию, а папку в базе
+    # может поправить любой, у кого есть push. Своя база — стенд коммитит в неё сам.
+    $shareScript = Join-Path $scripts 'flow-share.ps1'
+    $shareRepo = Join-Path $root 'share'
+    $shareBase = Join-Path $root 'base-share'
+    New-TestRepo $shareRepo
+    Invoke-BaseInit $shareBase | Out-Null
+    & pwsh -NoProfile -File $link -Path $shareRepo -Base $shareBase | Out-Null
+    $shareMe = Get-MeDir $shareBase
+    $sharePeople = Get-PeopleDir $shareBase
+    New-Item -ItemType Directory -Force -Path (Join-Path $shareMe 'flow\stages'), (Join-Path $shareMe 'agents') | Out-Null
+    Set-Content -LiteralPath (Join-Path $shareMe 'flow\scenarios.md') -Encoding utf8 -Value '# Проект — сценарии', '', '## свой', 'когда: разведка', '1. [Разведка](stages/scout.md)'
+    Set-Content -LiteralPath (Join-Path $shareMe 'flow\stages\scout.md') -Encoding utf8 -Value '# Разведка', '', 'исполнитель: scout', 'выход: отчёт в памяти'
+    Set-Content -LiteralPath (Join-Path $shareMe 'agents\scout.md') -Encoding utf8 -Value '---', 'name: scout', '---', '', 'разведать'
+    Set-Content -LiteralPath (Join-Path $shareMe 'agents\private.md') -Encoding utf8 -Value '---', 'name: private', '---', '', 'личный'
+    Set-Content -LiteralPath (Join-Path $shareMe 'autonomy.md') -Encoding utf8 -Value '# Рамки', '', 'своя рамка оператора'
+    Commit-All $shareMe 'свой флоу'
+    function Invoke-FlowShare([string[]]$ShareArgs) {
+        $out = & pwsh -NoProfile -File $shareScript -Path $shareRepo @ShareArgs 2>&1
+        return [pscustomobject]@{ code = $LASTEXITCODE; text = ($out -join "`n") }
+    }
+
+    Check 'выложить флоу — сценарии, этапы и субагенты этапов в папке оператора, рамок нет, закоммичено' {
+        $r = Invoke-FlowShare @('-Action', 'Publish')
+        if ($r.code -ne 0) { return "код возврата $($r.code): $($r.text)" }
+        if ((Get-Content -LiteralPath (Join-Path $sharePeople 'flow\scenarios.md') -Raw) -notmatch '## свой') { return 'сценарий не выложен' }
+        foreach ($f in 'flow\stages\scout.md', 'agents\scout.md') {
+            if (-not (Test-Path -LiteralPath (Join-Path $sharePeople $f) -PathType Leaf)) { return "не выложен $f" }
+        }
+        foreach ($f in 'agents\private.md', 'autonomy.md') {
+            if (Test-Path -LiteralPath (Join-Path $sharePeople $f)) { return "выложен $f — его не зовёт ни один этап или это рамки" }
+        }
+        $dirty = @(& git -C $shareBase status --porcelain --untracked-files=all | Where-Object { $_ })
+        if ($dirty.Count) { return "в базе осталось незакоммиченное: $($dirty -join '; ')" }
+        return $null
+    }
+
+    Check 'чужая правка папки оператора — подача и флоу оператора прежние, новое выкладывание её заменяет' {
+        Set-Content -LiteralPath (Join-Path $sharePeople 'flow\scenarios.md') -Encoding utf8 -Value '# Проект — сценарии', '', '## подменённый', '1. [Разведка](stages/scout.md)'
+        Set-Content -LiteralPath (Join-Path $sharePeople 'autonomy.md') -Encoding utf8 -Value '# Рамки', '', 'чужая рамка'
+        Commit-All $shareBase 'чужая правка'
+        $problem = ExpectText $shareRepo 'своя рамка оператора' -Lacks 'чужая рамка'
+        if ($problem) { return $problem }
+        if ((Get-Content -LiteralPath (Join-Path $shareMe 'flow\scenarios.md') -Raw) -notmatch '## свой') { return 'флоу оператора изменился' }
+        $r = Invoke-FlowShare @('-Action', 'Publish')
+        if ($r.code -ne 0) { return "код возврата $($r.code): $($r.text)" }
+        if ((Get-Content -LiteralPath (Join-Path $sharePeople 'flow\scenarios.md') -Raw) -notmatch '## свой') { return 'выложенное не вернулось к флоу оператора' }
+        if (Test-Path -LiteralPath (Join-Path $sharePeople 'autonomy.md')) { return 'подложенные рамки остались в папке оператора' }
+        return $null
+    }
+
+    # Коллега выложил своё: папка другого оператора в базе.
+    $shareOther = Get-PeopleDir $shareBase 'x'
+    New-Item -ItemType Directory -Force -Path (Join-Path $shareOther 'flow\stages'), (Join-Path $shareOther 'agents') | Out-Null
+    Set-Content -LiteralPath (Join-Path $shareOther 'flow\scenarios.md') -Encoding utf8 -Value '# Проект — сценарии', '', 'Общий текст коллеги.', '', '## чужой', 'когда: проверка', '1. [Проверка](stages/check.md)'
+    Set-Content -LiteralPath (Join-Path $shareOther 'flow\stages\check.md') -Encoding utf8 -Value '# Проверка', '', 'исполнитель: checker', 'выход: вердикт в памяти'
+    Set-Content -LiteralPath (Join-Path $shareOther 'agents\checker.md') -Encoding utf8 -Value '---', 'name: checker', '---', '', 'проверить'
+    Commit-All $shareBase 'коллега выложил флоу'
+
+    Check 'взять флоу коллеги — его сценарий с этапами и субагентами в личном репозитории, свой сценарий цел' {
+        $r = Invoke-FlowShare @('-Action', 'Take', '-From', 'x')
+        if ($r.code -ne 0) { return "код возврата $($r.code): $($r.text)" }
+        $text = Get-Content -LiteralPath (Join-Path $shareMe 'flow\scenarios.md') -Raw
+        if ($text -notmatch '## свой' -or $text -notmatch '## чужой') { return "в сценариях не оба: $text" }
+        if ($text -match 'Общий текст коллеги') { return 'общий текст коллеги лёг поверх своего флоу' }
+        foreach ($f in 'flow\stages\check.md', 'agents\checker.md') {
+            if (-not (Test-Path -LiteralPath (Join-Path $shareMe $f) -PathType Leaf)) { return "не взят $f" }
+        }
+        $dirty = @(& git -C $shareMe status --porcelain --untracked-files=all | Where-Object { $_ })
+        if ($dirty.Count) { return "в личном репозитории осталось незакоммиченное: $($dirty -join '; ')" }
+        return $null
+    }
+
+    Check 'взять снова, а у коллеги этап другой — без -Replace отказ и флоу не тронут, с -Replace заменён' {
+        Set-Content -LiteralPath (Join-Path $shareOther 'flow\stages\check.md') -Encoding utf8 -Value '# Проверка', '', 'исполнитель: checker', 'выход: вердикт и sha в памяти'
+        Commit-All $shareBase 'коллега поправил этап'
+        $stage = Join-Path $shareMe 'flow\stages\check.md'
+        $r = Invoke-FlowShare @('-Action', 'Take', '-From', 'x')
+        if ($r.code -eq 0) { return 'скрипт не отказал' }
+        if ($r.text -notmatch 'stages/check\.md' -or $r.text -notmatch 'заменится') { return "не названо, что заменится: $($r.text)" }
+        if ((Get-Content -LiteralPath $stage -Raw) -match 'sha') { return 'этап заменён без -Replace' }
+        $r = Invoke-FlowShare @('-Action', 'Take', '-From', 'x', '-Replace')
+        if ($r.code -ne 0) { return "код возврата $($r.code): $($r.text)" }
+        if ((Get-Content -LiteralPath $stage -Raw) -notmatch 'sha') { return 'этап не заменён с -Replace' }
+        return $null
     }
 
     # Дальше — не стенд, а сам репозиторий кита.
