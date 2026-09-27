@@ -43,6 +43,10 @@ if (-not $Base) {
             Write-Host "База:          каталога нет — указатель разорван" -ForegroundColor Red
             exit 1
         }
+        'Unmerged' {
+            Write-Host "База:          $(Get-KitUnmergedProblem $state)" -ForegroundColor Red
+            exit 1
+        }
         'NotBase' {
             Write-Host "База:          agents-kit.json нет, он не читается или в нём нет формата базы — это не база кита" -ForegroundColor Red
             exit 1

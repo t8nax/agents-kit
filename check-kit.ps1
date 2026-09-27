@@ -20,6 +20,7 @@ $script:await = Join-Path $scripts 'await-answer.ps1'
 $script:deploy = Join-Path $scripts 'agents-deploy.ps1'
 $script:wtAdd = Join-Path $scripts 'worktree-add.ps1'
 $script:gate = Join-Path $scripts 'commit-gate.ps1'
+$script:sync = Join-Path $scripts 'sync.ps1'
 $root = Join-Path ([System.IO.Path]::GetTempPath()) ("agents-kit-check-" + [guid]::NewGuid().ToString('N').Substring(0, 8))
 
 # Без этих переменных первый коммит base-init.ps1 зависел бы от конфига машины.
@@ -178,6 +179,15 @@ function Invoke-BaseMigrate([string]$Script, [string]$Dir, [string]$Operator = $
     return [pscustomobject]@{ code = $LASTEXITCODE; text = ($out -join "`n") }
 }
 
+function Invoke-Sync([string]$Dir, [string]$Repo, [string]$Action) {
+    $out = & pwsh -NoProfile -File $script:sync -Path $Dir -Repo $Repo -Action $Action 2>&1
+    return [pscustomobject]@{ code = $LASTEXITCODE; text = ($out -join "`n") }
+}
+
+function Get-Head([string]$Dir) {
+    return [string](& git -C $Dir rev-parse HEAD 2>$null)
+}
+
 function Get-MarkerFormat([string]$Base) {
     return (Get-Content -LiteralPath (Join-Path $Base 'agents-kit.json') -Raw | ConvertFrom-Json).version
 }
@@ -263,6 +273,12 @@ $newBase = Join-Path $root 'base-mig-new'
 $kitCopy = Join-Path $root 'kit-copy'
 $v1Repo  = Join-Path $root 'v1'
 $v1Base  = Join-Path $root 'base-v1'
+$syncRepoA = Join-Path $root 'sync-a'
+$syncBaseA = Join-Path $root 'base-sync-a'
+$syncRepoB = Join-Path $root 'sync-b'
+$syncBaseB = Join-Path $root 'base-sync-b'
+$syncBare  = Join-Path $root 'base-sync.git'
+$syncMe    = Join-Path $root 'me-sync.git'
 
 try {
     New-Item -ItemType Directory -Force -Path $plain, $notbase | Out-Null
@@ -1222,6 +1238,168 @@ try {
 
     & git -C $repo config --local agents-kit.base $notbase
     Check 'каталог без agents-kit.json — не база' { ExpectText $repo 'ведёт не в базу' }
+
+    # Сведение с remote: две машины одного оператора — две базы, склонированные с одного bare,
+    # и личные репозитории с одним bare. Remote — каталог на диске: сеть стенду не нужна.
+    New-TestRepo $syncRepoA
+    Invoke-BaseInit $syncBaseA | Out-Null
+    & pwsh -NoProfile -File $link -Path $syncRepoA -Base $syncBaseA | Out-Null
+    $syncMeA = Get-MeDir $syncBaseA
+    $syncMeB = Get-MeDir $syncBaseB
+
+    Check 'сведение без origin — сводить не с чем, код 0' {
+        $r = Invoke-Sync $syncRepoA 'Base' 'Push'
+        if ($r.code -ne 0) { return "код $($r.code): $($r.text)" }
+        if ($r.text -notmatch 'нет origin') { return "не сказано, что origin нет: $($r.text)" }
+        return $null
+    }
+
+    & git clone -q --bare $syncBaseA $syncBare 2>$null
+    & git -C $syncBaseA remote add origin $syncBare
+    & git clone -q --bare $syncMeA $syncMe 2>$null
+    & git -C $syncMeA remote add origin $syncMe
+    & git clone -q $syncBare $syncBaseB 2>$null
+    Invoke-BaseInit $syncBaseB 'ORD' $script:op $syncMe | Out-Null
+    New-TestRepo $syncRepoB
+    & pwsh -NoProfile -File $link -Path $syncRepoB -Base $syncBaseB | Out-Null
+
+    Check 'отдать базу — коммит на remote, другая машина его забирает и видит пришедший файл' {
+        Set-Content -LiteralPath (Join-Path $syncBaseA 'product.md') -Value '# Сведение — продукт', '', 'строка с машины A' -Encoding utf8
+        & git -C $syncBaseA commit -qm 'A: product' -- product.md
+        $r = Invoke-Sync $syncRepoA 'Base' 'Push'
+        if ($r.code -ne 0) { return "отдание: код $($r.code): $($r.text)" }
+        if ((Get-Head $syncBare) -ne (Get-Head $syncBaseA)) { return 'на remote не тот коммит' }
+        $r = Invoke-Sync $syncRepoB 'Base' 'Pull'
+        if ($r.code -ne 0) { return "забирание: код $($r.code): $($r.text)" }
+        if ($r.text -notmatch 'product\.md') { return "не назван пришедший файл: $($r.text)" }
+        if ((Get-Head $syncBaseB) -ne (Get-Head $syncBaseA)) { return 'вторая машина не забрала коммит' }
+        return $null
+    }
+
+    Check 'забрать при незакоммиченной правке другого файла — перемотка, правка цела' {
+        Set-Content -LiteralPath (Join-Path $syncBaseA 'boundaries.md') -Value '# Границы', '', 'граница с машины A' -Encoding utf8
+        & git -C $syncBaseA commit -qm 'A: boundaries' -- boundaries.md
+        Invoke-Sync $syncRepoA 'Base' 'Push' | Out-Null
+        $product = Join-Path $syncBaseB 'product.md'
+        Add-Content -LiteralPath $product -Value 'незакоммиченная правка соседней сессии' -Encoding utf8
+        try {
+            $r = Invoke-Sync $syncRepoB 'Base' 'Pull'
+            if ($r.code -ne 0) { return "код $($r.code): $($r.text)" }
+            if ((Get-Head $syncBaseB) -ne (Get-Head $syncBaseA)) { return 'не перемотано' }
+            if ((Get-Content -LiteralPath $product -Raw) -notmatch 'незакоммиченная правка') { return 'правка соседней сессии пропала' }
+            return $null
+        }
+        finally { & git -C $syncBaseB checkout -q -- product.md }
+    }
+
+    Check 'отдание отклонено — забрано rebase и отдано, мержей нет' {
+        Set-Content -LiteralPath (Join-Path $syncBaseA 'boundaries.md') -Value '# Границы', '', 'вторая граница с машины A' -Encoding utf8
+        & git -C $syncBaseA commit -qm 'A: boundaries 2' -- boundaries.md
+        Invoke-Sync $syncRepoA 'Base' 'Push' | Out-Null
+        $decision = Join-Path $syncBaseB 'decisions\sync.md'
+        New-Item -ItemType Directory -Force -Path (Split-Path $decision -Parent) | Out-Null
+        Set-Content -LiteralPath $decision -Value '# Сведение', 'когда: правка сведения', '', '## Тема', '- решение с машины B' -Encoding utf8
+        & git -C $syncBaseB add -- decisions/sync.md
+        & git -C $syncBaseB commit -qm 'B: decision' -- decisions/sync.md
+        $r = Invoke-Sync $syncRepoB 'Base' 'Push'
+        if ($r.code -ne 0) { return "код $($r.code): $($r.text)" }
+        if ((Get-Head $syncBare) -ne (Get-Head $syncBaseB)) { return 'на remote не коммит машины B' }
+        $merges = @(& git -C $syncBaseB rev-list --merges HEAD | Where-Object { $_ })
+        if ($merges.Count) { return 'в истории базы появился мерж' }
+        return $null
+    }
+
+    # Конфликт держится недоделанным сведением: его видят хук, гейт и отчёт связи без сети.
+    Invoke-Sync $syncRepoA 'Base' 'Pull' | Out-Null
+    Set-Content -LiteralPath (Join-Path $syncBaseA 'product.md') -Value '# Сведение — продукт', '', 'редакция машины A' -Encoding utf8
+    & git -C $syncBaseA commit -qm 'A: product 2' -- product.md
+    Invoke-Sync $syncRepoA 'Base' 'Push' | Out-Null
+    Set-Content -LiteralPath (Join-Path $syncBaseB 'product.md') -Value '# Сведение — продукт', '', 'редакция машины B' -Encoding utf8
+    & git -C $syncBaseB commit -qm 'B: product 2' -- product.md
+    $conflict = Invoke-Sync $syncRepoB 'Base' 'Push'
+
+    Check 'конфликт — сведение стоит недоделанным, вывод называет файл и команду' {
+        if ($conflict.code -ne 1) { return "код $($conflict.code): $($conflict.text)" }
+        if (-not (Test-Path -LiteralPath (Join-Path $syncBaseB '.git\rebase-merge'))) { return 'rebase не идёт' }
+        foreach ($needle in 'product.md', '-Action Continue') {
+            if ($conflict.text -notmatch [regex]::Escape($needle)) { return "в выводе нет «$needle»: $($conflict.text)" }
+        }
+        return $null
+    }
+
+    Check 'конфликт — хук останавливает работу со знанием' {
+        Test-HookText (Invoke-Hook $syncRepoB) @('сведение с remote не закончено', 'product.md') @('Три слоя', 'редакция машины')
+    }
+
+    Check 'конфликт — гейт отказывает коммиту в базу и в личный репозиторий, отчёт link.ps1 красный' {
+        foreach ($target in $syncBaseB, $syncMeB) {
+            $reason = Invoke-CommitGate $syncRepoB "git -C `"$target`" commit -m x -- x.md"
+            if ($reason -notmatch 'не закончено сведение') { return "гейт пустил коммит в $target`: $reason" }
+        }
+        return ExpectLinkReport $syncRepoB 1 'не закончено сведение'
+    }
+
+    Check 'доделать с метками конфликта — отказ' {
+        $r = Invoke-Sync $syncRepoB 'Base' 'Continue'
+        if ($r.code -ne 1) { return "код $($r.code): $($r.text)" }
+        if ($r.text -notmatch 'метки конфликта') { return "отказ не про метки: $($r.text)" }
+        return $null
+    }
+
+    Check 'доделать после сведения файла — отдано, хук снова подаёт базу' {
+        Set-Content -LiteralPath (Join-Path $syncBaseB 'product.md') -Value '# Сведение — продукт', '', 'редакция машины A', 'редакция машины B' -Encoding utf8
+        $r = Invoke-Sync $syncRepoB 'Base' 'Continue'
+        if ($r.code -ne 0) { return "код $($r.code): $($r.text)" }
+        if (Test-Path -LiteralPath (Join-Path $syncBaseB '.git\rebase-merge')) { return 'rebase всё ещё идёт' }
+        if ((Get-Head $syncBare) -ne (Get-Head $syncBaseB)) { return 'сведённое не отдано' }
+        return Test-HookText (Invoke-Hook $syncRepoB) @('Три слоя', 'редакция машины B')
+    }
+
+    # Двоичный файл ответом текстом не свести — сторону называет -Keep.
+    Check 'конфликт в двоичном артефакте — -Keep берёт сторону, сведено и отдано' {
+        Invoke-Sync $syncRepoA 'Base' 'Pull' | Out-Null
+        $artA = Join-Path $syncBaseA 'artifacts\scheme.bin'
+        $artB = Join-Path $syncBaseB 'artifacts\scheme.bin'
+        New-Item -ItemType Directory -Force -Path (Split-Path $artA -Parent), (Split-Path $artB -Parent) | Out-Null
+        [System.IO.File]::WriteAllBytes($artA, [byte[]](0, 1, 2, 3))
+        & git -C $syncBaseA add -- artifacts/scheme.bin
+        & git -C $syncBaseA commit -qm 'A: artifact' -- artifacts/scheme.bin
+        Invoke-Sync $syncRepoA 'Base' 'Push' | Out-Null
+        [System.IO.File]::WriteAllBytes($artB, [byte[]](0, 9, 9, 9))
+        & git -C $syncBaseB add -- artifacts/scheme.bin
+        & git -C $syncBaseB commit -qm 'B: artifact' -- artifacts/scheme.bin
+        $r = Invoke-Sync $syncRepoB 'Base' 'Push'
+        if ($r.code -ne 1) { return "конфликта нет, код $($r.code): $($r.text)" }
+        $out = & pwsh -NoProfile -File $script:sync -Path $syncRepoB -Repo Base -Action Continue -Keep 'artifacts/scheme.bin=Local' 2>&1
+        if ($LASTEXITCODE -ne 0) { return "доделать: код $LASTEXITCODE`: $($out -join ' ')" }
+        if ((Get-Head $syncBare) -ne (Get-Head $syncBaseB)) { return 'сведённое не отдано' }
+        if (([System.IO.File]::ReadAllBytes($artB) -join ',') -ne '0,9,9,9') { return 'в файле не редакция этой машины' }
+        return $null
+    }
+
+    Check 'remote недоступен — код 2, база не тронута' {
+        $head = Get-Head $syncBaseB
+        & git -C $syncBaseB remote set-url origin (Join-Path $root 'no-such-remote.git')
+        try {
+            $r = Invoke-Sync $syncRepoB 'Base' 'Pull'
+            if ($r.code -ne 2) { return "код $($r.code): $($r.text)" }
+            if ($r.text -notmatch 'недоступен') { return "не сказано, что remote недоступен: $($r.text)" }
+            if ((Get-Head $syncBaseB) -ne $head) { return 'база сдвинулась' }
+            return $null
+        }
+        finally { & git -C $syncBaseB remote set-url origin $syncBare }
+    }
+
+    Check 'личный репозиторий — отдан с одной машины, забран на другой' {
+        Add-Content -LiteralPath (Join-Path $syncMeA 'backlog.md') -Value '', '## ORD-1 Запись с машины A', '', 'текст' -Encoding utf8
+        & git -C $syncMeA commit -qm 'A: backlog' -- backlog.md
+        $r = Invoke-Sync $syncRepoA 'Personal' 'Push'
+        if ($r.code -ne 0) { return "отдание: код $($r.code): $($r.text)" }
+        $r = Invoke-Sync $syncRepoB 'Personal' 'Pull'
+        if ($r.code -ne 0) { return "забирание: код $($r.code): $($r.text)" }
+        if ((Get-Content -LiteralPath (Join-Path $syncMeB 'backlog.md') -Raw) -notmatch 'Запись с машины A') { return 'запись не пришла' }
+        return $null
+    }
 
     # Формат базы. Своя база и копия: agents-kit.json правится проверками и уходит в коммит базы.
     New-TestRepo $migRepo

@@ -128,11 +128,13 @@ try {
     if (-not $cwd -or -not (Test-Path -LiteralPath $cwd -PathType Container)) { exit 0 }
 
     $state = Get-KitLinkState $cwd
-    if ($state.status -notin 'Linked', 'Outdated', 'Newer') { exit 0 }
+    if ($state.status -notin 'Linked', 'Outdated', 'Newer', 'Unmerged') { exit 0 }
     $worktree = $state.worktree
     # Базу другого формата сверка по текущим правилам не рассудит, а коммит в неё — это запись
-    # по прежним правилам поверх новых или наоборот.
+    # по прежним правилам поверх новых или наоборот. Посреди сведения коммит лёг бы внутрь
+    # недоделанного rebase.
     $formatProblem = Get-KitFormatProblem $state
+    $unmergedProblem = Get-KitUnmergedProblem $state
 
     $findings = @()
     $dir = ConvertTo-KitPath $cwd
@@ -156,6 +158,14 @@ try {
         if (-not $top) { continue }
         $top = ConvertTo-KitPath $top
         if ($top -ine $state.base -and $top -ine (Get-KitPersonalDir $state.base)) { continue }
+        if ($unmergedProblem) {
+            Emit 'deny' @"
+agents-kit: коммит в базу знаний остановлен — $unmergedProblem.
+
+Работа со знанием стоит до разрешения.
+"@
+            exit 0
+        }
         if ($formatProblem) {
             Emit 'deny' @"
 agents-kit: коммит в базу знаний остановлен — $formatProblem.

@@ -194,6 +194,17 @@ function Test-KitPersonalRepo([string]$BaseDir) {
     return [bool]($dir -and (Test-Path -LiteralPath (Join-Path $dir '.git')))
 }
 
+# Репозиторий, где не закончено сведение с remote: rebase или merge встал на конфликте. Смотрятся
+# файлы в .git, а не git: проверка идёт на старте каждой сессии.
+function Test-KitUnmerged([string]$Repo) {
+    if (-not $Repo) { return $false }
+    $git = Join-Path $Repo '.git'
+    foreach ($mark in 'rebase-merge', 'rebase-apply', 'MERGE_HEAD') {
+        if (Test-Path -LiteralPath (Join-Path $git $mark)) { return $true }
+    }
+    return $false
+}
+
 # Имя оператора — латиница в нижнем регистре, цифры и дефис между ними: оно же имя его папки
 # в people\, и форма одна на любой диск и любой git.
 function Test-KitOperatorName([string]$Name) {
@@ -394,7 +405,9 @@ function Test-KitWorkspaceKnown([string]$BaseDir, [string]$Workspace) {
 #   NotGit      каталог вне git-репозитория
 #   NoPointer   ни каталог, ни репозиторий базы не объявили — под китом не числится
 #   BaseMissing указатель есть, каталога базы нет
-#   NotBase     каталог есть, но agents-kit.json нет, он не читается или в нём нет формата
+#   Unmerged    в базе или в личном репозитории не закончено сведение с remote — до формата: посреди
+#               конфликта метки могут стоять в любом файле, и в agents-kit.json тоже
+#   NotBase    каталог есть, но agents-kit.json нет, он не читается или в нём нет формата
 #   Outdated    формат базы старше того, что ждёт кит, — перевести
 #   Newer       базу перевёл кит новее этого — обновить кит
 #   Unlisted    база есть, но на этой машине эту копию не числит своей
@@ -406,7 +419,7 @@ function Get-KitLinkState([string]$Dir) {
         status = 'NotGit'; workspace = $null; worktree = $null
         repo = $null; scope = ''; base = $null; marker = $null
         format = $null; kitFormat = $null
-        operator = $null; personal = $null; people = $null
+        operator = $null; personal = $null; people = $null; unmerged = $null
     }
 
     $roots = Get-KitRoots $Dir
@@ -422,6 +435,13 @@ function Get-KitLinkState([string]$Dir) {
     $state.status = 'BaseMissing'
 
     if (-not (Test-Path -LiteralPath $state.base -PathType Container)) { return [pscustomobject]$state }
+    foreach ($candidate in $state.base, (Get-KitPersonalDir $state.base)) {
+        if (Test-KitUnmerged $candidate) {
+            $state.unmerged = $candidate
+            $state.status = 'Unmerged'
+            return [pscustomobject]$state
+        }
+    }
     $state.status = 'NotBase'
 
     $marker = Get-KitMarker $state.base
@@ -468,4 +488,25 @@ function Get-KitFormatProblem($State) {
         'Newer' { return "базу «$($State.base)» перевёл на формат $($State.format) кит новее этого, а этот знает формат до $($State.kitFormat) — обновить кит" }
     }
     return $null
+}
+
+# Команда сведения с remote — одна для хука, скиллов и отчёта: базу или личный репозиторий
+# называет -Repo.
+function Get-KitSyncCommand([string]$Worktree, [string]$Repo, [string]$Action) {
+    $sync = ConvertTo-KitPath (Join-Path $PSScriptRoot 'sync.ps1')
+    return "pwsh -NoProfile -File `"$sync`" -Path `"$Worktree`" -Repo $Repo -Action $Action"
+}
+
+# Что с незаконченным сведением и чем его доделать — одной строкой для хука, гейта, link.ps1
+# и sync.ps1. Файлы конфликта спрашиваются у git только в этом состоянии.
+function Get-KitUnmergedProblem($State) {
+    if ($State.status -ne 'Unmerged') { return $null }
+    $repo = 'Base'
+    $what = 'базе'
+    if ($State.unmerged -ine $State.base) { $repo = 'Personal'; $what = 'личном репозитории' }
+    $files = @(& git -C $State.unmerged diff --name-only --diff-filter=U 2>$null | Where-Object { $_ })
+    $named = 'файлы не названы git'
+    if ($files.Count) { $named = ($files | ForEach-Object { "``$_``" }) -join ', ' }
+    $layout = ConvertTo-KitPath (Join-Path $PSScriptRoot '..\reference\base-layout.md')
+    return "в $what «$($State.unmerged)» не закончено сведение с remote, конфликт: $named — свести по разделу «Когда параллельные задачи сходятся» раскладки базы ``$layout`` и доделать: $(Get-KitSyncCommand $State.worktree $repo 'Continue')"
 }

@@ -29,6 +29,7 @@ switch ($state.status) {
     'NotGit'    { throw "«$Path» не под git — это не рабочая копия проекта под китом" }
     'NoPointer' { throw "каталог «$($state.workspace)» под китом не числится — переводить нечего" }
     'Newer'     { throw (Get-KitFormatProblem $state) }
+    'Unmerged'  { throw (Get-KitUnmergedProblem $state) }
     { $_ -in 'Linked', 'Unnamed', 'NoPersonal' } {
         Write-Host "База «$($state.base)» уже формата $($state.format) — переводить нечего."
         exit 0

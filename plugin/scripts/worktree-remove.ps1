@@ -27,6 +27,7 @@ switch ($state.status) {
     'NoPointer' { throw "каталог «$($state.workspace)» под китом не числится — удалять его киту нечем" }
     'Linked'    { }
     { $_ -in 'Outdated', 'Newer' } { throw (Get-KitFormatProblem $state) }
+    'Unmerged'  { throw (Get-KitUnmergedProblem $state) }
     { $_ -in 'Unnamed', 'NoPersonal' } { throw "места оператора на этой машине нет — завести: $(Get-KitOperatorCommand $state.base $state.operator)" }
     default    { throw "связь копии «$($state.workspace)» с базой разорвана — link.ps1 без аргументов покажет, что именно" }
 }
