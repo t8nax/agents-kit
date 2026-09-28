@@ -491,20 +491,94 @@ try {
         return $problem
     }
 
+    # tracker.md стенда: разделы по таблице раскладки, «## Где задачи» начинается строками Keys.
+    $trackerSections = 'Где задачи', 'Показ бэклога', 'Взятие задачи', 'Задача закрыта', 'Вынос записи бэклога'
+    $trackerKeys = 'трекер: YouTrack', 'сервер: https://yt.acme.local', 'проект: PAY'
+    function Get-TrackerText([string[]]$Keys = $trackerKeys, [int]$Count = 5) {
+        $lines = @('# Проект — трекер')
+        foreach ($s in @($trackerSections | Select-Object -First $Count)) {
+            $lines += '', "## $s"
+            if ($s -eq 'Где задачи') { $lines += @($Keys) + '' }
+            $lines += 'слова'
+        }
+        return $lines
+    }
+    function Invoke-TrackerGate([string[]]$Keys, [string]$Gate = $script:gate) {
+        Set-Content -LiteralPath (Join-Path $base 'tracker.md') -Encoding utf8 -Value (Get-TrackerText $Keys)
+        return Invoke-CommitGate $repo "git -C `"$base`" commit -m x -- tracker.md" $Gate
+    }
+
     # Разделы tracker.md сверка берёт из таблицы раскладки: разбор не сошёлся — отказ и целому файлу.
     Check 'tracker.md — все разделы гейт пускает, без раздела — отказ с /tracker' {
         $tracker = Join-Path $base 'tracker.md'
-        $sections = 'Где задачи', 'Показ бэклога', 'Взятие задачи', 'Задача закрыта', 'Вынос записи бэклога'
         try {
-            Set-Content -LiteralPath $tracker -Encoding utf8 -Value (@('# Проект — трекер') + @($sections | ForEach-Object { '', "## $_", 'слова' }))
+            Set-Content -LiteralPath $tracker -Encoding utf8 -Value (Get-TrackerText)
             $reason = Invoke-CommitGate $repo "git -C `"$base`" commit -m x -- tracker.md"
             if ($reason) { return "гейт остановил полный файл: «$reason»" }
-            Set-Content -LiteralPath $tracker -Encoding utf8 -Value (@('# Проект — трекер') + @($sections | Select-Object -First 4 | ForEach-Object { '', "## $_", 'слова' }))
+            Set-Content -LiteralPath $tracker -Encoding utf8 -Value (Get-TrackerText -Count 4)
             $reason = Invoke-CommitGate $repo "git -C `"$base`" commit -m x -- tracker.md"
             if ($reason -notmatch 'Вынос записи бэклога' -or $reason -notmatch '/tracker') { return "гейт не назвал раздел и /tracker: «$reason»" }
             return $null
         }
         finally { Remove-Item -LiteralPath $tracker -Force -ErrorAction SilentlyContinue }
+    }
+
+    # Вид проекта сверка берёт из таблицы трекеров раскладки; по трекеру — верный проект и неверный.
+    Check 'tracker.md — строки трекера: верные гейт пускает, без строки, пустую, повтор, не адрес, логин и чужой вид проекта — нет' {
+        $server = 'сервер: https://tracker.acme.local'
+        $cases = @(
+            @{ lines = @('трекер: GitHub', 'сервер: https://github.com', 'проект: acme/pay'); want = '' }
+            @{ lines = @('трекер: gitlab', $server, 'проект: acme/team/pay'); want = '' }
+            @{ lines = @('трекер: Jira', $server, 'проект: PAY_2'); want = '' }
+            @{ lines = @('трекер: YouTrack', 'сервер: http://yt.acme.local:8080/youtrack', 'проект: pay_1'); want = '' }
+            @{ lines = @($server, 'проект: PAY'); want = 'нет строк: «трекер:»' }
+            @{ lines = @('трекер: Jira', 'сервер:', 'проект: PAY'); want = 'пусты строки: «сервер:»' }
+            @{ lines = @('трекер: Jira', $server, 'проект: PAY', 'проект: ORD'); want = 'повторены строки: «проект:»' }
+            @{ lines = @('трекер: Jira', 'сервер: tracker.acme.local', 'проект: PAY'); want = 'не адрес вида' }
+            @{ lines = @('трекер: Jira', 'сервер: https://user:secret@tracker.acme.local', 'проект: PAY'); want = 'логин, пароль' }
+            @{ lines = @('трекер: GitHub', 'сервер: https://github.com', 'проект: acme'); want = 'шаблону проекта GitHub' }
+            @{ lines = @('трекер: GitLab', $server, 'проект: acme'); want = 'шаблону проекта GitLab' }
+            @{ lines = @('трекер: Jira', $server, 'проект: pay'); want = 'шаблону проекта Jira' }
+            @{ lines = @('трекер: YouTrack', $server, 'проект: 1PAY'); want = 'шаблону проекта YouTrack' }
+        )
+        try {
+            foreach ($case in $cases) {
+                $reason = Invoke-TrackerGate $case.lines
+                $named = $case.lines -join ' · '
+                if (-not $case.want) {
+                    if ($reason) { return "гейт остановил верные строки «$named»: «$reason»" }
+                    continue
+                }
+                if ($reason -notmatch [regex]::Escape($case.want) -or $reason -notmatch '/tracker') { return "«$named»: гейт не назвал «$($case.want)» и /tracker: «$reason»" }
+                if ($reason -match 'secret') { return 'находка разнесла пароль из адреса' }
+            }
+            return $null
+        }
+        finally { Remove-Item -LiteralPath (Join-Path $base 'tracker.md') -Force -ErrorAction SilentlyContinue }
+    }
+
+    Check 'tracker.md — трекер не из таблицы: гейт пускает, сверка предупреждает' {
+        try {
+            $reason = Invoke-TrackerGate @('трекер: Redmine', 'сервер: https://redmine.acme.local', 'проект: любой проект')
+            if ($reason) { return "гейт остановил незнакомый трекер: «$reason»" }
+            return ExpectText $repo 'трекера «Redmine» нет в таблице трекеров'
+        }
+        finally { Remove-Item -LiteralPath (Join-Path $base 'tracker.md') -Force -ErrorAction SilentlyContinue }
+    }
+
+    # Таблица трекеров — на копии кита без её строк.
+    Check 'таблица трекеров раскладки не разобрана — гейт не пускает tracker.md' {
+        $kitNoTrackers = Join-Path $root 'kit-no-trackers'
+        Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'plugin') -Destination $kitNoTrackers -Recurse
+        $layout = Join-Path $kitNoTrackers 'reference\base-layout.md'
+        $text = [regex]::Replace((Get-Content -LiteralPath $layout -Raw -Encoding utf8), '(?m)^\| `(GitHub|GitLab|Jira|YouTrack)` \|.*\r?\n', '')
+        Set-Content -LiteralPath $layout -Value $text -Encoding utf8 -NoNewline
+        try {
+            $reason = Invoke-TrackerGate $trackerKeys (Join-Path $kitNoTrackers 'scripts\commit-gate.ps1')
+            if ($reason -notmatch 'трекеров не разобран') { return "гейт не назвал неразобранную таблицу: «$reason»" }
+            return $null
+        }
+        finally { Remove-Item -LiteralPath (Join-Path $base 'tracker.md') -Force -ErrorAction SilentlyContinue }
     }
 
     # Флоу нужен только /flow и /drive, и в каждую сессию он не приезжает.
@@ -1828,6 +1902,31 @@ try {
         $fails = @($got -split "`n" | Where-Object { $_ -match '^- \*\*FAIL\*\*' })
         if ($fails.Count) { return "сверка после перевода красная: $($fails -join ' | ')" }
         return Test-HookText $got 'проект под китом'
+    }
+
+    # Формат 6: tracker.md с разделами, но без строк трекера, сервера и проекта.
+    $v6Repo = Join-Path $root 'v6'
+    $v6Base = Join-Path $root 'base-v6'
+    New-TestRepo $v6Repo
+    Invoke-BaseInit $v6Base | Out-Null
+    & pwsh -NoProfile -File $link -Path $v6Repo -Base $v6Base | Out-Null
+    Set-MarkerFormat $v6Base 6
+    $v6Tracker = Join-Path $v6Base 'tracker.md'
+    Set-Content -LiteralPath $v6Tracker -Encoding utf8 -Value (Get-TrackerText @())
+    Commit-All $v6Base 'формат 6'
+
+    Check 'перевод с формата 6 — tracker.md не тронут, вывод зовёт /tracker, сверка называет строки' {
+        $before = Get-CommitCount $v6Base
+        $text = Get-Content -LiteralPath $v6Tracker -Raw
+        $r = Invoke-BaseMigrate $v1Migrate $v6Repo
+        if ($r.code -ne 0) { return "код возврата $($r.code): $($r.text)" }
+        if ((Get-MarkerFormat $v6Base) -ne $kitFormat) { return "формат $(Get-MarkerFormat $v6Base), ожидался $kitFormat" }
+        if ((Get-Content -LiteralPath $v6Tracker -Raw) -cne $text) { return 'tracker.md изменён' }
+        if ($r.text -notmatch 'нет строк трекера, сервера и проекта' -or $r.text -notmatch '/tracker') { return "вывод не называет строки и /tracker: $($r.text)" }
+        if ((Get-CommitCount $v6Base) -ne $before + $kitFormat - 6) { return "коммитов прибавилось $((Get-CommitCount $v6Base) - $before), ожидалось $($kitFormat - 6)" }
+        $dirty = @(& git -C $v6Base status --porcelain --untracked-files=all | Where-Object { $_ })
+        if ($dirty.Count) { return "в базе осталось незакоммиченное: $($dirty -join '; ')" }
+        return ExpectText $v6Repo 'нет строк: «трекер:», «сервер:», «проект:»'
     }
 
     # Флоу выкладывают и берут скриптом: агент работает по личному репозиторию, а папку в базе

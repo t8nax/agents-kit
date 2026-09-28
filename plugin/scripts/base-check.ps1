@@ -182,7 +182,7 @@ function Read-KitReference([string]$Name) {
 # Потолки и ключи из справок кита. Несошедшийся разбор не молчит: файл без разобранного
 # правила даёт FAIL, а не проходит непроверенным.
 function Get-KitLayoutRules {
-    $result = @{ files = @{}; memory = $null; decision = $null; artifact = $null; flowKeys = [ordered]@{}; executors = @(); questionKeys = [ordered]@{}; backlogFields = [ordered]@{}; trackerSections = @() }
+    $result = @{ files = @{}; memory = $null; decision = $null; artifact = $null; flowKeys = [ordered]@{}; executors = @(); questionKeys = [ordered]@{}; backlogFields = [ordered]@{}; trackerSections = @(); trackers = [ordered]@{} }
 
     # Таблица ключей — единственная в своём разделе с колонкой «да/нет».
     $memoryText = Read-KitReference 'task-memory.md'
@@ -219,7 +219,16 @@ function Get-KitLayoutRules {
     $artifact = [regex]::Match($text, 'Потолок артефакта — (\d+) МБ\.')
     if ($artifact.Success) { $result.artifact = [int]$artifact.Groups[1].Value }
 
-    $result.trackerSections = @([regex]::Matches((Get-KitLayoutSection $text '## Трекер'), '(?m)^\|\s*`##\s+([^`]+?)\s*`\s*\|') | ForEach-Object { $_.Groups[1].Value })
+    $tracker = Get-KitLayoutSection $text '## Трекер'
+    $result.trackerSections = @([regex]::Matches($tracker, '(?m)^\|\s*`##\s+([^`]+?)\s*`\s*\|') | ForEach-Object { $_.Groups[1].Value })
+    # Таблица трекеров — четыре колонки, из них код берёт имя и шаблон проекта; номер задачи
+    # читает сессия.
+    # Шаблон, который не собирается в выражение, делает несошедшейся всю таблицу: иначе его
+    # трекер ушёл бы в незнакомые предупреждением.
+    foreach ($row in [regex]::Matches($tracker, '(?m)^\|\s*`([^`]+)`\s*\|[^|]*\|\s*`([^`]+)`\s*\|\s*`[^`]+`\s*\|\s*$')) {
+        try { [void][regex]::new($row.Groups[2].Value) } catch { $result.trackers = [ordered]@{}; break }
+        $result.trackers[$row.Groups[1].Value.ToLowerInvariant()] = [pscustomobject]@{ name = $row.Groups[1].Value; project = $row.Groups[2].Value }
+    }
     return $result
 }
 
@@ -518,18 +527,85 @@ function Get-KitBacklogFindings([string]$Path, [string]$Label, $Rules) {
     Get-KitBacklogFieldFindings $Label ($head -join "`n") $entries $Rules
 }
 
+# Строки «ключ: значение» в начале раздела «## Где задачи» — до первой пустой строки после них
+# или до прозы. Разбор один на сверку и шаг перевода 007. Строка — { key в нижнем регистре; value }.
+function Get-KitTrackerKeys([string]$Text) {
+    $keys = [System.Collections.Generic.List[object]]::new()
+    $inside = $false
+    $fence = $false
+    foreach ($line in ($Text -split '\r?\n')) {
+        if ($line -match '^```') { $fence = -not $fence }
+        if (-not $fence -and $line -match '^##\s') {
+            if ($inside) { break }
+            $inside = $line -match '^##\s+Где задачи\s*$'
+            continue
+        }
+        if (-not $inside) { continue }
+        if (-not $line.Trim()) {
+            if ($keys.Count) { break }
+            continue
+        }
+        $pair = [regex]::Match($line, '^\s*([^\s:][^:]*?)\s*:\s*(.*?)\s*$')
+        if (-not $pair.Success) { break }
+        $keys.Add([pscustomobject]@{ key = $pair.Groups[1].Value.ToLowerInvariant(); value = $pair.Groups[2].Value })
+    }
+    return $keys
+}
+
+# Трекер, сервер и проект — строками, а не прозой: сверка ловит опечатку в адресе и проекте,
+# номер задачи опознаётся по виду из таблицы трекеров, а не догадкой по словам, и /tracker
+# сверяет записанное с тем, куда смотрит инструмент. Незнакомый трекер не отвергается: кит
+# в трекеры не ходит, и ходить в незнакомый инструменту оператора это не мешает. В сеть
+# сверка не ходит — адрес проверяется только видом.
+function Get-KitTrackerKeyFindings([string]$Text, [string]$Label, $Rules) {
+    $fix = 'поправить скиллом /tracker'
+    $keys = @(Get-KitTrackerKeys $Text)
+    $values = @{}
+    $groups = [ordered]@{}
+    foreach ($name in 'трекер', 'сервер', 'проект') {
+        $found = @($keys | Where-Object { $_.key -eq $name })
+        if (-not $found.Count) { Add-KitGroupedFinding $groups 'FAIL' 'в «## Где задачи» нет строк' $fix "«${name}:»"; continue }
+        if ($found.Count -gt 1) { Add-KitGroupedFinding $groups 'FAIL' 'в «## Где задачи» повторены строки' $fix "«${name}:»"; continue }
+        if (-not $found[0].value) { Add-KitGroupedFinding $groups 'FAIL' 'в «## Где задачи» пусты строки' $fix "«${name}:»"; continue }
+        $values[$name] = $found[0].value
+    }
+    Get-KitGroupedFindings $groups $Label
+
+    # Адрес с логином или паролем в находку не попадает: иначе сверка разнесла бы секрет.
+    $server = $values['сервер']
+    if ($server -and ($server -match '[@?#]')) {
+        New-KitFinding 'FAIL' $Label "в «сервер:» логин, пароль, запрос или фрагмент — инвариант «Секреты не попадают в git базы»; $fix"
+    }
+    elseif ($server -and $server -notmatch '^https?://[A-Za-z0-9.-]+(:\d{1,5})?(/\S*)?$') {
+        New-KitFinding 'FAIL' $Label "«сервер: $server» — не адрес вида http(s)://хост[:порт][/путь]; $fix"
+    }
+
+    $tracker = $values['трекер']
+    if (-not $tracker) { return }
+    $known = $Rules.trackers[$tracker.ToLowerInvariant()]
+    if (-not $known) {
+        New-KitFinding 'WARN' $Label "трекера «$tracker» нет в таблице трекеров раскладки — проект проверен только на непустоту, вид номера задачи пишется словами раздела; $fix"
+        return
+    }
+    $project = $values['проект']
+    if ($project -and $project -cnotmatch "^(?:$($known.project))$") {
+        New-KitFinding 'FAIL' $Label "«проект: $project» не по шаблону проекта $($known.name) из таблицы трекеров раскладки; $fix"
+    }
+}
+
 # tracker.md — разделы из таблицы раскладки: /drive и /backlog читают свой раздел по заголовку,
 # и нет его — момент прошёл бы без трекера молча. Раздел — заголовок «##» вне блока кода
 # до следующего такого же; пустой — без единой непустой строки после вырезки комментариев.
 function Get-KitTrackerFindings([string]$Path, [string]$Label, $Rules) {
-    if (-not $Rules.trackerSections.Count) {
-        New-KitFinding 'FAIL' $Label 'перечень разделов не разобран — таблица в разделе «Трекер» раскладки'
+    if (-not $Rules.trackerSections.Count -or -not $Rules.trackers.Count) {
+        New-KitFinding 'FAIL' $Label 'перечень разделов или трекеров не разобран — таблицы в разделе «Трекер» раскладки'
         return
     }
+    $text = Read-KitMarkdown $Path
     $sections = [ordered]@{}
     $current = $null
     $fence = $false
-    foreach ($line in ((Read-KitMarkdown $Path) -split '\r?\n')) {
+    foreach ($line in ($text -split '\r?\n')) {
         if ($line -match '^```') { $fence = -not $fence }
         $heading = if ($fence) { $null } else { [regex]::Match($line, '^##\s+(.+?)\s*$') }
         if ($heading -and $heading.Success) {
@@ -549,10 +625,12 @@ function Get-KitTrackerFindings([string]$Path, [string]$Label, $Rules) {
         if ($Rules.trackerSections -notcontains $name) { Add-KitGroupedFinding $groups 'FAIL' 'разделы не из таблицы раскладки' 'своих разделов не заводят — поправить скиллом /tracker' "«## $name»" }
     }
     Get-KitGroupedFindings $groups $Label
+    if ($sections['Где задачи']) { Get-KitTrackerKeyFindings $text $Label $Rules }
 }
 
 # Каркас на месте — в корне базы и в личном репозитории, своя папка оператора в базе есть;
-# подаваемые файлы в потолке; бэклог сходится со счётчиком и перечнем полей, tracker.md — с разделами.
+# подаваемые файлы в потолке; бэклог сходится со счётчиком и перечнем полей, tracker.md — с разделами
+# и строками трекера.
 # О прочих файлах сверх каркаса сверка молчит.
 function Get-KitRootFindings([string]$Base, $Ceilings) {
     $operator = Get-KitOperatorRoot $Base
