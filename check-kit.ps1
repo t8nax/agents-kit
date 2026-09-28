@@ -1540,6 +1540,27 @@ try {
         finally { & git -C $syncBaseB remote set-url origin $syncBare }
     }
 
+    Check 'база прежнего формата, забор упёрся в правку соседа — вывод зовёт коммит из терминала' {
+        Invoke-Sync $syncRepoA 'Base' 'Pull' | Out-Null
+        Set-Content -LiteralPath (Join-Path $syncBaseA 'team.md') -Value '# Правила команды', '', 'третье правило с машины A' -Encoding utf8
+        & git -C $syncBaseA commit -qm 'A: team 3' -- team.md
+        Invoke-Sync $syncRepoA 'Base' 'Push' | Out-Null
+        $branch = [string](& git -C $syncBaseB rev-parse --abbrev-ref HEAD)
+        Set-MarkerFormat $syncBaseB ((Get-MarkerFormat $syncBaseB) - 1)
+        & git -C $syncBaseB commit -qm 'B: прежний формат' -- agents-kit.json
+        Add-Content -LiteralPath (Join-Path $syncBaseB 'product.md') -Value 'правка соседней сессии' -Encoding utf8
+        try {
+            $r = Invoke-Sync $syncRepoB 'Base' 'Pull'
+            if ($r.code -ne 1) { return "код $($r.code): $($r.text)" }
+            if ($r.text -notmatch 'не забрано' -or $r.text -notmatch 'git из терминала') { return "вывод не зовёт коммит из терминала: $($r.text)" }
+            return $null
+        }
+        finally {
+            & git -C $syncBaseB checkout -q -- product.md
+            & git -C $syncBaseB reset -q --hard "origin/$branch"
+        }
+    }
+
     Check 'личный репозиторий — отдан с одной машины, забран на другой' {
         Add-Content -LiteralPath (Join-Path $syncMeA 'backlog.md') -Value '', '## ORD-1 Запись с машины A', '', 'текст' -Encoding utf8
         & git -C $syncMeA commit -qm 'A: backlog' -- backlog.md
@@ -1621,32 +1642,54 @@ try {
         return $null
     }
 
-    Check 'перевод при незакоммиченном в базе — отказ, база не тронута' {
-        $stray = Join-Path $migBase 'stray.md'
-        Set-Content -LiteralPath $stray -Value 'соседняя работа' -Encoding utf8
+    Check 'шаг задел незакоммиченное соседа — отказ, правка соседа на месте' {
+        $team = Join-Path $migBase 'team.md'
+        Set-Content -LiteralPath $team -Value 'правка соседа' -Encoding utf8
+        $before = Get-CommitCount $migBase
         try {
             $r = Invoke-BaseMigrate $copyMigrate $migRepo
             if ($r.code -eq 0) { return 'скрипт не отказал' }
-            if ($r.text -notmatch 'stray\.md') { return "не назван незакоммиченный файл: $($r.text)" }
+            if ($r.text -notmatch 'team\.md' -or $r.text -notmatch 'соседней сессии') { return "не назван файл соседа: $($r.text)" }
             if ((Get-MarkerFormat $migBase) -ne $kitFormat) { return 'формат поднят' }
-            if (-not (Test-Path -LiteralPath (Join-Path $migBase 'team.md'))) { return 'шаг всё-таки сделан' }
+            if ((Get-CommitCount $migBase) -ne $before) { return 'коммит всё-таки сделан' }
+            if (Test-Path -LiteralPath (Join-Path $migBase 'limits.md')) { return 'сделанное шагом не откачено' }
+            if (-not (Test-Path -LiteralPath $team) -or (Get-Content -LiteralPath $team -Raw).Trim() -ne 'правка соседа') { return 'правка соседа не возвращена' }
             return $null
         }
-        finally { Remove-Item -LiteralPath $stray -Force }
+        finally { & git -C $migBase checkout -q -- team.md }
     }
 
-    Check 'перевод — шаг сделан, формат поднят, один коммит, дерево чистое, связь сошлась' {
+    Check 'перевод посреди работы соседей — шаг сделан одним коммитом, чужое не закоммичено и не тронуто' {
+        $stray = Join-Path $migBase 'stray.md'
+        $staged = Join-Path $migBase 'staged.md'
+        $memory = Join-Path (Get-MeDir $migBase) 'backlog.md'
+        Set-Content -LiteralPath $stray -Value 'соседняя работа' -Encoding utf8
+        Set-Content -LiteralPath $staged -Value 'соседняя работа в индексе' -Encoding utf8
+        & git -C $migBase add -- staged.md
+        Add-Content -LiteralPath $memory -Value 'правка соседа в личном' -Encoding utf8
         $before = Get-CommitCount $migBase
-        $r = Invoke-BaseMigrate $copyMigrate $migRepo
-        if ($r.code -ne 0) { return "код возврата $($r.code): $($r.text)" }
-        if ((Get-MarkerFormat $migBase) -ne $fakeFormat) { return "формат $(Get-MarkerFormat $migBase), ожидался $fakeFormat" }
-        if (-not (Test-Path -LiteralPath (Join-Path $migBase 'limits.md')) -or (Test-Path -LiteralPath (Join-Path $migBase 'team.md'))) { return 'шаг не сделан' }
-        if ((Get-CommitCount $migBase) -ne $before + 1) { return "коммитов прибавилось $((Get-CommitCount $migBase) - $before), ожидался 1" }
-        $dirty = @(& git -C $migBase status --porcelain | Where-Object { $_ })
-        if ($dirty.Count) { return "в базе осталось незакоммиченное: $($dirty -join '; ')" }
-        $got = Invoke-Hook $migRepo $copyHook
-        if ($got -notmatch 'проект под китом') { return "после перевода нет подачи: $($got.Split("`n")[0])" }
-        return $null
+        $meBefore = Get-CommitCount (Get-MeDir $migBase)
+        try {
+            $r = Invoke-BaseMigrate $copyMigrate $migRepo
+            if ($r.code -ne 0) { return "код возврата $($r.code): $($r.text)" }
+            if ((Get-MarkerFormat $migBase) -ne $fakeFormat) { return "формат $(Get-MarkerFormat $migBase), ожидался $fakeFormat" }
+            if (-not (Test-Path -LiteralPath (Join-Path $migBase 'limits.md')) -or (Test-Path -LiteralPath (Join-Path $migBase 'team.md'))) { return 'шаг не сделан' }
+            if ((Get-CommitCount $migBase) -ne $before + 1) { return "коммитов прибавилось $((Get-CommitCount $migBase) - $before), ожидался 1" }
+            if ((Get-CommitCount (Get-MeDir $migBase)) -ne $meBefore) { return 'в личном репозитории коммит, хотя шаг его не трогал' }
+            $committed = @(& git -C $migBase show --name-only --no-renames --format= HEAD | Where-Object { $_ } | Sort-Object)
+            if (($committed -join ',') -ne 'agents-kit.json,limits.md,team.md') { return "в коммите перевода: $($committed -join ', ')" }
+            $dirty = @(& git -C $migBase status --porcelain | Where-Object { $_ })
+            if ($dirty.Count -ne 2 -or $dirty -notcontains 'A  staged.md' -or $dirty -notcontains '?? stray.md') { return "в базе незакоммиченное не то, что было у соседей: $($dirty -join '; ')" }
+            if ((Get-Content -LiteralPath $memory -Raw) -notmatch 'правка соседа в личном') { return 'правка соседа в личном репозитории потеряна' }
+            $got = Invoke-Hook $migRepo $copyHook
+            if ($got -notmatch 'проект под китом') { return "после перевода нет подачи: $($got.Split("`n")[0])" }
+            return $null
+        }
+        finally {
+            & git -C $migBase rm -qf --cached -- staged.md 2>$null
+            Remove-Item -LiteralPath $stray, $staged -Force -ErrorAction SilentlyContinue
+            & git -C (Get-MeDir $migBase) checkout -q -- backlog.md
+        }
     }
 
     Check 'повторный перевод — переводить нечего' {

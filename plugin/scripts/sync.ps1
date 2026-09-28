@@ -99,6 +99,15 @@ function Invoke-SyncFetch {
     exit 2
 }
 
+# Кто закоммитит незакоммиченную правку, мешающую забору. У базы прежнего формата гейт не пустит
+# коммит ни одной сессии, и забор ждал бы вечно.
+function Get-SyncDirtyHint {
+    if ($state.status -eq 'Outdated') {
+        return 'Сессии её не закоммитят, пока база прежнего формата: закоммитить её git из терминала решает оператор, затем забрать снова'
+    }
+    return 'Её закоммитит сессия, которая её ведёт; забрать при следующем сведении'
+}
+
 function Test-SyncRemoteBranch([string]$Branch) {
     return (Invoke-SyncGit @('rev-parse', '--verify', '--quiet', "refs/remotes/origin/$Branch")).ok
 }
@@ -117,14 +126,14 @@ function Invoke-SyncPull([string]$Branch) {
     if ($ahead -eq 0) {
         $r = Invoke-SyncGit @('merge', '--ff-only', '-q', "origin/$Branch")
         if (-not $r.ok) {
-            Write-Host "с remote $gen не забрано — git не перемотал: $($r.text). Незакоммиченную правку в этих файлах закоммитит сессия, которая её ведёт; забрать при следующем сведении"
+            Write-Host "с remote $gen не забрано — git не перемотал: $($r.text). Незакоммиченная правка в этих файлах мешает. $(Get-SyncDirtyHint)"
             exit 1
         }
     }
     else {
         $dirty = @((Invoke-SyncGit @('status', '--porcelain', '--untracked-files=no')).lines | ForEach-Object { $_.Substring(3) })
         if ($dirty.Count) {
-            Write-Host "с remote $gen не забрано — в $loc незакоммиченная правка: $($dirty -join ', '). Её закоммитит сессия, которая её ведёт; забрать при следующем сведении"
+            Write-Host "с remote $gen не забрано — в $loc незакоммиченная правка: $($dirty -join ', '). $(Get-SyncDirtyHint)"
             exit 1
         }
         $r = Invoke-SyncGit @('-c', 'core.editor=true', 'rebase', '-q', "origin/$Branch")
