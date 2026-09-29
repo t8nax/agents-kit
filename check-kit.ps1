@@ -247,18 +247,14 @@ function Get-KitFiles([string]$Kit) {
 }
 
 # Строки текста кита для проверок путей и упоминаний файлов: .md целиком, в .ps1 — только
-# комментарии, в коде стенда пути — данные проверок. Раздел «Чего в ките нет» в CLAUDE.md
-# называет отсутствующее намеренно и пропускается.
+# комментарии, в коде стенда пути — данные проверок.
 function Get-KitTextLines([string]$Kit, [string[]]$Files) {
     foreach ($file in $Files) {
         $isScript = $file -like '*.ps1'
         if (-not $isScript -and $file -notlike '*.md') { continue }
         $lines = @(Get-Content -LiteralPath (Join-Path $Kit $file) -Encoding utf8)
-        $skip = $false
         for ($i = 0; $i -lt $lines.Count; $i++) {
             $text = $lines[$i]
-            if ($file -eq 'CLAUDE.md' -and $text -match '^## ') { $skip = $text -eq '## Чего в ките нет' }
-            if ($skip) { continue }
             if ($isScript -and $text -notmatch '^\s*#') { continue }
             [pscustomobject]@{ file = $file; line = $i + 1; text = $text }
         }
@@ -2246,10 +2242,19 @@ $kitRepo = {
         $declared = Get-KitManifestVersion (Get-Content -LiteralPath (Join-Path $kit 'plugin\.claude-plugin\plugin.json') -Raw)
         if (-not $declared) { return 'в plugin\.claude-plugin\plugin.json не читается version' }
 
-        # Выложенное — вышестоящая ветка текущей: именно её несут установленные копии.
-        # Нет вышестоящей или файла в ней — кит никуда не выложен, устаревать нечему.
+        # Выложенное — вышестоящая ветка текущей: именно её несут установленные копии. У ветки
+        # доработки в worktree вышестоящей нет — тогда основная ветка origin. Нет origin или файла
+        # в выложенном — кит никуда не выложен, устаревать нечему; origin есть, а его основная
+        # ветка не известна — проверка назвала бы зелёным то, чего не сравнила.
         $upstream = & git -C $kit rev-parse --abbrev-ref '@{u}' 2>$null
-        if ($LASTEXITCODE -ne 0 -or -not $upstream) { return $null }
+        if ($LASTEXITCODE -ne 0 -or -not $upstream) {
+            $upstream = & git -C $kit rev-parse --abbrev-ref origin/HEAD 2>$null
+            if ($LASTEXITCODE -ne 0 -or -not $upstream) {
+                & git -C $kit remote get-url origin 2>$null | Out-Null
+                if ($LASTEXITCODE -ne 0) { return $null }
+                return 'у ветки нет вышестоящей, а основная ветка origin не известна — выполнить git remote set-head origin -a'
+            }
+        }
         $publishedJson = (& git -C $kit show "${upstream}:plugin/.claude-plugin/plugin.json" 2>$null) -join "`n"
         if ($LASTEXITCODE -ne 0) { return $null }
         $published = Get-KitManifestVersion $publishedJson
@@ -2344,6 +2349,8 @@ $kitRepo = {
         # Файл базы, которого нет в каркасе, назван в таблице «Куда именно» раскладки.
         $layout = Get-Content -LiteralPath (Join-Path $kit 'plugin\reference\base-layout.md') -Raw -Encoding utf8
         foreach ($m in [regex]::Matches($layout, '(?m)^\|\s*`([\p{L}\p{Nd}_.-]+\.md)`\s*\|')) { $names[$m.Groups[1].Value] = $true }
+        # CLAUDE.md в тексте кита — файл Claude Code в проекте под китом, а не файл кита.
+        $names['CLAUDE.md'] = $true
         $found = foreach ($entry in $kitText) {
             # Путь от корня репозитория, а в тексте внутри plugin — от plugin: так его видит
             # пользователь кита. .claude в plugin не лежит — его путь всегда от корня.
