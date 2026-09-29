@@ -46,39 +46,7 @@ function Invoke-KitGitStrict([string]$Repo, [string[]]$GitArgs, [string]$What) {
     if ($LASTEXITCODE -ne 0) { throw "git не смог $What в «$Repo»" }
 }
 
-# Незакоммиченное в этих путях — чужая работа или недоделанная правка: скрипт её не трогает.
-function Assert-KitCommitted([string]$Repo, [string[]]$Paths, [string]$What) {
-    $dirty = @(& git -C $Repo status --porcelain=v1 --untracked-files=all -- @Paths 2>$null | Where-Object { $_ })
-    if ($LASTEXITCODE -ne 0) { throw "git не прочитал состояние «$Repo»" }
-    if (-not $dirty.Count) { return }
-    $named = (@($dirty | Select-Object -First 3) | ForEach-Object { $_.Substring(3) }) -join ', '
-    if ($dirty.Count -gt 3) { $named += " и ещё $($dirty.Count - 3)" }
-    throw "в $What незакоммиченное: $named — скрипт работает с закоммиченным; закоммитить или убрать, решает оператор"
-}
-
-function Get-KitFindingLines($Findings) {
-    return (@($Findings) | ForEach-Object { "- $($_.severity) $($_.file) — $($_.message)" }) -join "`n"
-}
-
-# Строки сценария без хвостовых пустых — так сценарии сравниваются и склеиваются.
-function Join-KitSection($Lines) {
-    $list = [System.Collections.Generic.List[string]]::new()
-    foreach ($line in $Lines) { $list.Add($line) }
-    while ($list.Count -and -not $list[$list.Count - 1].Trim()) { $list.RemoveAt($list.Count - 1) }
-    return ($list -join "`n")
-}
-
-# Этапы и субагенты флоу, который лежит в Root: файлы этапов по имени и имена субагентов, которых
-# они зовут и которые лежат в agents\ рядом.
-function Read-KitStages([string]$Root, [string]$Label) {
-    $stages = [ordered]@{}
-    $dir = Join-Path (Join-Path $Root $flowDir) $script:KitStagesDir
-    foreach ($file in @(Get-ChildItem -LiteralPath $dir -File -Filter '*.md' -Force -ErrorAction SilentlyContinue | Sort-Object Name)) {
-        $stages[$file.Name.ToLowerInvariant()] = Read-KitStage $file.FullName $file.Name $Label
-    }
-    return $stages
-}
-
+# Субагенты, которых зовут этапы флоу, лежащего в Root, и которые лежат в agents\ рядом.
 function Get-KitCalledAgents([string]$Root, $Stages) {
     $names = [ordered]@{}
     foreach ($stage in $Stages) {

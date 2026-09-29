@@ -26,6 +26,7 @@ description: "Правка кита: добавить или изменить с
 | `plugin/scripts/worktree-remove.ps1` | как убирают рабочую копию, заведённую рядом с репозиторием |
 | `plugin/scripts/agents-deploy.ps1` | как субагенты оператора попадают в рабочую копию |
 | `plugin/scripts/flow-share.ps1` | как флоу переходит между личным репозиторием и папками операторов в базе |
+| `plugin/scripts/task-flow.ps1` | как флоу попадает в память задачи при её взятии |
 | `check-kit.ps1` | то ли делает кит на стендах и в порядке ли его репозиторий |
 | `plugin/reference/invariants.md` | что действует в каждой сессии под китом |
 | `plugin/reference/base-layout.md` | как ведут файлы базы |

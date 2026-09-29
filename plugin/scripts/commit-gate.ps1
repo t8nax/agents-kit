@@ -105,8 +105,15 @@ function Get-KitCommitFiles($Call, [string]$Top) {
     foreach ($spec in $Call.specs) {
         if (Test-Path -LiteralPath $spec -PathType Container) {
             $files += Get-KitGitNames $Top @('ls-files', '--cached', '--others', '--exclude-standard', '--', $spec)
+            continue
         }
-        else { $files += $spec }
+        # Удалённый каталог — его удалённые файлы: закрытие задачи уносит каталог флоу задачи.
+        $gone = @()
+        if (-not (Test-Path -LiteralPath $spec)) {
+            $gone = @(Get-KitGitNames $Top @('diff', '--cached', '--name-only', '--diff-filter=D', '--', $spec)) +
+                @(Get-KitGitNames $Top @('diff', '--name-only', '--diff-filter=D', '--', $spec))
+        }
+        if ($gone.Count) { $files += $gone } else { $files += $spec }
     }
     if (-not $Call.specs.Count -or $Call.include) {
         $files += Get-KitGitNames $Top @('diff', '--cached', '--name-only')

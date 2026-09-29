@@ -178,6 +178,13 @@ function Get-KitWorkMemoryPath([string]$Root, [string]$Worktree) {
     return ConvertTo-KitPath (Join-Path $dir ($slug + '.md'))
 }
 
+# Копия флоу задачи — каталог рядом с файлом памяти, с тем же слагом: адрес у неё тот же, что
+# у памяти, и уходит она вместе с ней. Внутри — flow\, как в личном репозитории.
+function Get-KitMemoryFlowRoot([string]$MemoryPath) {
+    if (-not $MemoryPath -or $MemoryPath -notmatch '\.md$') { return $null }
+    return ConvertTo-KitPath ($MemoryPath -replace '\.md$', '')
+}
+
 # Личный репозиторий оператора — local\me базы, свой git: рамки агента, флоу, субагенты, бэклог,
 # память задач и их артефакты. В local\, чтобы общая база его не видела: то, по чему работает агент
 # оператора, в общей базе поправил бы любой, у кого есть push в неё; коллегам память и бэклог

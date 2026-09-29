@@ -22,6 +22,7 @@ $script:deploy = Join-Path $scripts 'agents-deploy.ps1'
 $script:wtAdd = Join-Path $scripts 'worktree-add.ps1'
 $script:gate = Join-Path $scripts 'commit-gate.ps1'
 $script:sync = Join-Path $scripts 'sync.ps1'
+$script:taskFlow = Join-Path $scripts 'task-flow.ps1'
 # -StandRoot передаёт прогон процессу одного стенда: временная папка у стендов общая.
 $root = $StandRoot
 if (-not $root) { $root = Join-Path ([System.IO.Path]::GetTempPath()) ("agents-kit-check-" + [guid]::NewGuid().ToString('N').Substring(0, 8)) }
@@ -301,8 +302,8 @@ $modCase = Join-Path $mono 'Mixed\Case'
 $baseFoo = Join-Path $root 'base-foo'
 $baseBar = Join-Path $root 'base-bar'
 $basePfx = Join-Path $root 'base-prefix'
-$renRepo = Join-Path $root 'rename'
-$renBase = Join-Path $root 'base-rename'
+$tfRepo  = Join-Path $root 'task-flow'
+$tfBase  = Join-Path $root 'base-task-flow'
 $artRepo = Join-Path $root 'art'
 $artBase = Join-Path $root 'base-art'
 $migRepo = Join-Path $root 'mig'
@@ -932,155 +933,249 @@ $stands = [ordered]@{
         }
     }
 
-    'переименование' = {
-        # Переименование сценария посреди задачи: своя база, чтобы коммит памяти не сдвинул историю
-        # основной. Гейт гоняется настоящий, а коммит не делается — он только судит.
-        New-TestRepo $renRepo
-        Invoke-BaseInit $renBase | Out-Null
-        & pwsh -NoProfile -File $link -Path $renRepo -Base $renBase | Out-Null
-        $renFlow = Join-Path (Get-OpDir $renBase) 'flow\scenarios.md'
-        $renStages = Join-Path (Get-OpDir $renBase) 'flow\stages'
-        New-Item -ItemType Directory -Force -Path $renStages | Out-Null
-        foreach ($s in @(@('impl', 'Реализация'), @('review', 'Ревью'), @('writing', 'Написание'))) {
-            Set-Content -LiteralPath (Join-Path $renStages "$($s[0]).md") -Encoding utf8 `
+    'флоу-задачи' = {
+        # Задача идёт по флоу, скопированному в её память при взятии, а флоу правится когда угодно:
+        # своя база, чтобы коммиты памяти не сдвинули историю основной. Гейт гоняется настоящий
+        # и только судит; коммитит стенд сам.
+        New-TestRepo $tfRepo
+        Invoke-BaseInit $tfBase | Out-Null
+        & pwsh -NoProfile -File $link -Path $tfRepo -Base $tfBase | Out-Null
+        $tfMe = Get-MeDir $tfBase
+        $tfFlow = Join-Path (Get-OpDir $tfBase) 'flow\scenarios.md'
+        $tfStages = Join-Path (Get-OpDir $tfBase) 'flow\stages'
+        New-Item -ItemType Directory -Force -Path $tfStages | Out-Null
+        foreach ($s in @(@('impl', 'Реализация'), @('review', 'Ревью'), @('writing', 'Написание'), @('triage', 'Разбор'))) {
+            Set-Content -LiteralPath (Join-Path $tfStages "$($s[0]).md") -Encoding utf8 `
                 -Value "# $($s[1])", '', 'исполнитель: оркестратор', 'выход: коммит'
         }
-        $renFull = @('## полный', 'когда: новая возможность', '1. [Реализация](stages/impl.md)', '2. [Ревью](stages/review.md)', '')
-        $renDocs = @('## документация', 'когда: правка текстов', '1. [Написание](stages/writing.md)', '2. [Ревью](stages/review.md)', '')
-        $renFeature = @('## фича', 'когда: новая возможность', '1. [Реализация](stages/impl.md)', '2. [Ревью](stages/review.md)', '')
-        $renMem = Get-HookMemoryPath $renRepo
-        $renMemory = {
+        # Этап вне сценария, на который ссылается описание этапа сценария, едет в память вместе с ним.
+        Add-Content -LiteralPath (Join-Path $tfStages 'impl.md') -Encoding utf8 -Value '', 'Спорное — по правилам этапа «Разбор».'
+        $tfFull = @('## полный', 'когда: новая возможность', '1. [Реализация](stages/impl.md)', '2. [Ревью](stages/review.md)', '')
+        $tfDocs = @('## документация', 'когда: правка текстов', '1. [Написание](stages/writing.md)', '2. [Ревью](stages/review.md)', '')
+        $tfFeature = @('## фича', 'когда: новая возможность', '1. [Ревью](stages/review.md)', '2. [Реализация](stages/impl.md)', '')
+        Set-Content -LiteralPath $tfFlow -Encoding utf8 -Value (@('# Сценарии', '', 'Задачу брать по наименьшему номеру.', '') + $tfFull + $tfDocs)
+        Commit-All $tfMe 'флоу'
+        $tfMem = Get-HookMemoryPath $tfRepo
+        $tfCopy = $tfMem -replace '\.md$', ''
+        $tfCopyFlow = Join-Path $tfCopy 'flow\scenarios.md'
+        $tfMemory = {
             param([string]$Flow)
-            New-Item -ItemType Directory -Force -Path (Split-Path $renMem -Parent) | Out-Null
-            Set-Content -LiteralPath $renMem -Encoding utf8 -Value @(
-                '# Разбор накладной', "рабочая копия: $renRepo", "сценарий: $Flow", '',
+            New-Item -ItemType Directory -Force -Path (Split-Path $tfMem -Parent) | Out-Null
+            Set-Content -LiteralPath $tfMem -Encoding utf8 -Value @(
+                '# Разбор накладной', "рабочая копия: $tfRepo", "сценарий: $Flow", '',
                 '## Агенту', '', '### Сценарий', '- [ ] 1. Реализация', '- [ ] 2. Ревью', '',
                 '### Шаги', '- [ ] дочитать формат позиции')
         }
-        Set-Content -LiteralPath $renFlow -Encoding utf8 -Value (@('# Сценарии', '') + $renFull + $renDocs)
-        & $renMemory 'полный'
-        $renMe = Get-MeDir $renBase
-        Commit-All $renBase 'флоу'
-        Commit-All $renMe 'задача взята'
-        $renCommit = "git -C `"$renMe`" commit -m память -- `"$renMem`""
+        $tfCommit = "git -C `"$tfMe`" commit -m память -- `"$tfMem`""
+        $tfTakeCommit = "git -C `"$tfMe`" commit -m взята -- `"$tfMem`" `"$tfCopy`""
 
-        Check 'сценария памяти нет, этапы те же у одного сценария — сверка называет его' {
-            Set-Content -LiteralPath $renFlow -Encoding utf8 -Value (@('# Сценарии', '') + $renFeature + $renDocs)
-            return ExpectText $renRepo 'переименован в «фича»'
-        }
-
-        Check 'сценария памяти нет, сценария с теми же этапами нет — переименован или удалён' {
-            Set-Content -LiteralPath $renFlow -Encoding utf8 -Value (@('# Сценарии', '') + $renDocs)
-            return ExpectText $renRepo 'переименован — поправить строку «сценарий:» на новое имя' -Lacks 'переименован в «'
-        }
-
-        Check 'коммит памяти: сценарий переименован, строка поправлена, этапы те же — гейт пускает' {
-            Set-Content -LiteralPath $renFlow -Encoding utf8 -Value (@('# Сценарии', '') + $renFeature + $renDocs)
-            & $renMemory 'фича'
-            $reason = Invoke-CommitGate $renRepo $renCommit
-            if ($reason -match 'сценарий задачи не меняется') { return "гейт остановил переименование: $reason" }
+        Check 'взятие — task-flow.ps1 копирует в память сценарий задачи, его этапы и общий текст' {
+            $out = & pwsh -NoProfile -File $script:taskFlow -Path $tfRepo -Scenario 'полный' 2>&1
+            if ($LASTEXITCODE -ne 0) { return "код ${LASTEXITCODE}: $($out -join ' ')" }
+            if (-not (Test-Path -LiteralPath $tfCopyFlow -PathType Leaf)) { return "флоу задачи нет: $tfCopyFlow" }
+            $text = Get-Content -LiteralPath $tfCopyFlow -Raw
+            if ($text -notmatch '## полный' -or $text -match '## документация') { return "во флоу задачи не один сценарий задачи: $text" }
+            if ($text -notmatch 'наименьшему номеру') { return 'общего текста нет' }
+            $got = @(Get-ChildItem -LiteralPath (Join-Path $tfCopy 'flow\stages') -File | ForEach-Object { $_.Name } | Sort-Object) -join ','
+            if ($got -ne 'impl.md,review.md,triage.md') { return "этапы флоу задачи: $got" }
             return $null
         }
 
-        Check 'коммит памяти: строка сменена на другой сценарий, прежний на месте — гейт останавливает' {
-            Set-Content -LiteralPath $renFlow -Encoding utf8 -Value (@('# Сценарии', '') + $renFull + $renDocs)
-            & $renMemory 'документация'
-            $reason = Invoke-CommitGate $renRepo $renCommit
+        # Взятие, которое не дошло до памяти, оставляет незакоммиченный флоу: следующее его заменяет.
+        Check 'взятие — незакоммиченный флоу задачи без памяти заменяется' {
+            $out = & pwsh -NoProfile -File $script:taskFlow -Path $tfRepo -Scenario 'документация' 2>&1
+            if ($LASTEXITCODE -ne 0) { return "код ${LASTEXITCODE}: $($out -join ' ')" }
+            if ((Get-Content -LiteralPath $tfCopyFlow -Raw) -notmatch '## документация') { return 'флоу задачи не заменён' }
+            $out = & pwsh -NoProfile -File $script:taskFlow -Path $tfRepo -Scenario 'полный' 2>&1
+            if ($LASTEXITCODE -ne 0) { return "код ${LASTEXITCODE}: $($out -join ' ')" }
+            if (Test-Path -LiteralPath (Join-Path $tfCopy 'flow\stages\writing.md')) { return 'от прежнего флоу задачи остался этап' }
+            return $null
+        }
+
+        & $tfMemory 'полный'
+        Check 'взятие — задача у копии уже взята, повторный запуск отказывает' {
+            $out = & pwsh -NoProfile -File $script:taskFlow -Path $tfRepo -Scenario 'полный' 2>&1
+            if ($LASTEXITCODE -eq 0) { return 'скрипт не отказал' }
+            if (($out -join ' ') -notmatch 'уже лежит') { return "отказ не про лежащий флоу: $($out -join ' ')" }
+            return $null
+        }
+        Check 'коммит взятия без флоу задачи — гейт останавливает' {
+            $reason = Invoke-CommitGate $tfRepo $tfCommit
+            if ($reason -notmatch 'не в коммите') { return "гейт не остановил: «$reason»" }
+            return $null
+        }
+
+        Check 'коммит взятия с флоу задачи — гейт пускает' {
+            $reason = Invoke-CommitGate $tfRepo $tfTakeCommit
+            if ($reason) { return "гейт остановил: $reason" }
+            return $null
+        }
+        Commit-All $tfMe 'задача взята'
+
+        # Флоу правится при идущей задаче: задача его правку не видит.
+        Check 'флоу поправлен при идущей задаче — гейт пускает, сверка памяти молчит' {
+            Set-Content -LiteralPath $tfFlow -Encoding utf8 -Value (@('# Сценарии', '') + $tfFeature + $tfDocs)
+            $reason = Invoke-CommitGate $tfRepo "git -C `"$tfMe`" commit -m флоу -- `"$tfFlow`""
+            if ($reason) { return "гейт остановил правку флоу: $reason" }
+            return ExpectText $tfRepo 'дочитать формат позиции' -Lacks 'такого сценария', 'разошлось со списком сценария', 'нет флоу в памяти'
+        }
+        Commit-All $tfMe 'флоу поправлен'
+
+        Check 'коммит памяти: строка сменена на другой сценарий — гейт останавливает' {
+            & $tfMemory 'документация'
+            $reason = Invoke-CommitGate $tfRepo $tfCommit
+            & $tfMemory 'полный'
             if ($reason -notmatch 'сценарий задачи не меняется') { return "гейт не остановил: «$reason»" }
             return $null
         }
 
-        Check 'коммит памяти: прежний сценарий удалён, у нового другие этапы — гейт останавливает' {
-            Set-Content -LiteralPath $renFlow -Encoding utf8 -Value (@('# Сценарии', '') + $renDocs)
-            & $renMemory 'документация'
-            $reason = Invoke-CommitGate $renRepo $renCommit
-            if ($reason -notmatch 'сценарий задачи не меняется') { return "гейт не остановил: «$reason»" }
+        Check 'этапы «Сценария» памяти разошлись с флоу задачи — красная находка' {
+            $saved = Get-Content -LiteralPath $tfMem -Raw
+            Set-Content -LiteralPath $tfMem -Encoding utf8 -Value ($saved -replace '2\. Ревью', '2. Написание') -NoNewline
+            $problem = ExpectText $tfRepo 'разошлось со списком сценария «полный»'
+            Set-Content -LiteralPath $tfMem -Encoding utf8 -Value $saved -NoNewline
+            return $problem
+        }
+
+        Check 'флоу задачи поправлен — гейт останавливает' {
+            $stage = Join-Path $tfCopy 'flow\stages\review.md'
+            $saved = Get-Content -LiteralPath $stage -Raw
+            Add-Content -LiteralPath $stage -Encoding utf8 -Value 'правка посреди задачи'
+            $reason = Invoke-CommitGate $tfRepo "git -C `"$tfMe`" commit -m правка -- `"$stage`""
+            Set-Content -LiteralPath $stage -Encoding utf8 -Value $saved -NoNewline
+            if ($reason -notmatch 'флоу в памяти задачи не меняется') { return "гейт не остановил: «$reason»" }
             return $null
+        }
+
+        Check 'в закоммиченный флоу задачи добавлен этап — гейт останавливает' {
+            $extra = Join-Path $tfCopy 'flow\stages\writing.md'
+            Copy-Item -LiteralPath (Join-Path $tfStages 'writing.md') -Destination $extra
+            $reason = Invoke-CommitGate $tfRepo "git -C `"$tfMe`" commit -m этап -- `"$tfCopy`""
+            Remove-Item -LiteralPath $extra -Force
+            if ($reason -notmatch 'флоу в памяти задачи не меняется') { return "гейт не остановил: «$reason»" }
+            return $null
+        }
+
+        Check 'коммит каталогом с нетронутым флоу задачи — гейт пускает' {
+            $reason = Invoke-CommitGate $tfRepo "git -C `"$tfMe`" commit -m память -- `"$tfMem`" `"$tfCopy`""
+            if ($reason) { return "гейт остановил: $reason" }
+            return $null
+        }
+
+        Check 'флоу задачи удалён, память жива — гейт останавливает' {
+            & git -C $tfMe rm -rq -- $tfCopy 2>$null
+            $reason = Invoke-CommitGate $tfRepo "git -C `"$tfMe`" commit -m удалён -- `"$tfCopy`""
+            & git -C $tfMe reset -q --hard 2>$null
+            if ($reason -notmatch 'удаляется только вместе') { return "гейт не остановил: «$reason»" }
+            return $null
+        }
+
+        Check 'закрытие: память и флоу задачи удалены вместе — гейт пускает' {
+            & git -C $tfMe rm -rq -- $tfMem $tfCopy 2>$null
+            $reason = Invoke-CommitGate $tfRepo "git -C `"$tfMe`" commit -m закрыта -- `"$tfMem`" `"$tfCopy`""
+            & git -C $tfMe reset -q --hard 2>$null
+            if ($reason) { return "гейт остановил: $reason" }
+            return $null
+        }
+
+        Check 'флоу задачи без файла памяти — сверка называет' {
+            $saved = Get-Content -LiteralPath $tfMem -Raw
+            Remove-Item -LiteralPath $tfMem -Force
+            $problem = ExpectText $tfRepo 'рядом нет файла памяти'
+            Set-Content -LiteralPath $tfMem -Encoding utf8 -Value $saved -NoNewline
+            return $problem
+        }
+
+        Check 'память без флоу задачи — сверка называет' {
+            $away = Join-Path $root 'task-flow-away'
+            Move-Item -LiteralPath $tfCopy -Destination $away
+            $problem = ExpectText $tfRepo 'нет флоу в памяти задачи'
+            Move-Item -LiteralPath $away -Destination $tfCopy
+            return $problem
         }
 
         # Потерянный раздел этапов выключил бы сверку хода задачи молча. Строки этапов без заголовка
         # уходят в предыдущий подраздел.
-        Set-Content -LiteralPath $renFlow -Encoding utf8 -Value (@('# Сценарии', '') + $renFull + $renDocs)
-        $renHead = @('# Разбор накладной', "рабочая копия: $renRepo", 'сценарий: полный', '', '## Агенту', '')
-        $renStageLines = @('- [ ] 1. Реализация', '- [ ] 2. Ревью', '')
-        $renSteps = @('### Шаги', '- [ ] дочитать формат позиции')
-        $renNoFlow = $renHead + @('### Факты', '- формат позиции известен') + $renStageLines + $renSteps
+        $tfHead = @('# Разбор накладной', "рабочая копия: $tfRepo", 'сценарий: полный', '', '## Агенту', '')
+        $tfStageLines = @('- [ ] 1. Реализация', '- [ ] 2. Ревью', '')
+        $tfSteps = @('### Шаги', '- [ ] дочитать формат позиции')
+        $tfNoFlow = $tfHead + @('### Факты', '- формат позиции известен') + $tfStageLines + $tfSteps
 
         Check 'память без «### Сценарий», этапы под «Фактами» — красная находка называет, где они' {
-            Set-Content -LiteralPath $renMem -Encoding utf8 -Value $renNoFlow
-            return ExpectText $renRepo 'нет подраздела «### Сценарий» в «Агенту» — строки этапов стоят в «### Факты»' -Lacks 'разошлось со списком сценария'
+            Set-Content -LiteralPath $tfMem -Encoding utf8 -Value $tfNoFlow
+            return ExpectText $tfRepo 'нет подраздела «### Сценарий» в «Агенту» — строки этапов стоят в «### Факты»' -Lacks 'разошлось со списком сценария'
         }
 
         Check 'в «Сценарии» памяти ни одного этапа — красная находка' {
-            Set-Content -LiteralPath $renMem -Encoding utf8 -Value ($renHead + @('### Сценарий', '') + $renSteps)
-            return ExpectText $renRepo 'нет ни одного этапа' -Lacks 'разошлось со списком сценария'
+            Set-Content -LiteralPath $tfMem -Encoding utf8 -Value ($tfHead + @('### Сценарий', '') + $tfSteps)
+            return ExpectText $tfRepo 'нет ни одного этапа' -Lacks 'разошлось со списком сценария'
         }
 
         Check 'память без «### Шаги» — одна красная находка, о подразделе' {
-            Set-Content -LiteralPath $renMem -Encoding utf8 -Value ($renHead + @('### Сценарий') + $renStageLines)
-            return ExpectText $renRepo 'нет подраздела «### Шаги»' -Lacks '«Шаги» пусты'
+            Set-Content -LiteralPath $tfMem -Encoding utf8 -Value ($tfHead + @('### Сценарий') + $tfStageLines)
+            return ExpectText $tfRepo 'нет подраздела «### Шаги»' -Lacks '«Шаги» пусты'
         }
 
         # Пропажа и возврат раздела этапов меняют отметки, но переходом не считаются.
         Check 'коммит памяти: заголовок «Сценарий» стёрт, шаги уцелели — не переход' {
-            & $renMemory 'полный'
-            & git -C $renMe add -A 2>$null
-            & git -C $renMe commit -qm 'сценарий памяти' | Out-Null
-            Set-Content -LiteralPath $renMem -Encoding utf8 -Value $renNoFlow
-            $reason = Invoke-CommitGate $renRepo $renCommit
+            & $tfMemory 'полный'
+            & git -C $tfMe add -A 2>$null
+            & git -C $tfMe commit -qm 'сценарий памяти' | Out-Null
+            Set-Content -LiteralPath $tfMem -Encoding utf8 -Value $tfNoFlow
+            $reason = Invoke-CommitGate $tfRepo $tfCommit
             if ($reason -match 'прежнего этапа') { return "гейт принял пропажу за переход: $reason" }
             if ($reason -notmatch 'нет подраздела «### Сценарий»') { return "гейт не назвал пропажу: «$reason»" }
             return $null
         }
 
         Check 'коммит памяти: заголовок «Сценарий» вернули — не переход' {
-            & git -C $renMe add -A 2>$null
-            & git -C $renMe commit -qm 'заголовок потерян' | Out-Null
-            & $renMemory 'полный'
-            $reason = Invoke-CommitGate $renRepo $renCommit
+            & git -C $tfMe add -A 2>$null
+            & git -C $tfMe commit -qm 'заголовок потерян' | Out-Null
+            & $tfMemory 'полный'
+            $reason = Invoke-CommitGate $tfRepo $tfCommit
             if ($reason -match 'прежнего этапа') { return "гейт принял возврат заголовка за переход: $reason" }
             return $null
         }
 
         Check 'коммит памяти: заголовок «Шаги» вернули над закрытым шагом — не новые шаги' {
-            Set-Content -LiteralPath $renMem -Encoding utf8 -Value ($renHead + @('### Сценарий') + $renStageLines + @('- [ ] дочитать формат позиции'))
-            & git -C $renMe add -A 2>$null
-            & git -C $renMe commit -qm 'заголовок шагов потерян' | Out-Null
-            Set-Content -LiteralPath $renMem -Encoding utf8 -Value ($renHead + @('### Сценарий') + $renStageLines +
+            Set-Content -LiteralPath $tfMem -Encoding utf8 -Value ($tfHead + @('### Сценарий') + $tfStageLines + @('- [ ] дочитать формат позиции'))
+            & git -C $tfMe add -A 2>$null
+            & git -C $tfMe commit -qm 'заголовок шагов потерян' | Out-Null
+            Set-Content -LiteralPath $tfMem -Encoding utf8 -Value ($tfHead + @('### Сценарий') + $tfStageLines +
                 @('### Шаги', '- [x] дочитать формат позиции — результат: формат в a.txt — проверен: прочитан файл'))
-            $reason = Invoke-CommitGate $renRepo $renCommit
+            $reason = Invoke-CommitGate $tfRepo $tfCommit
             if ($reason -match 'появилась уже закрытой') { return "гейт принял возврат заголовка за новые шаги: $reason" }
             return $null
         }
 
         # Память живёт в личном репозитории, и гейт судит коммит туда так же, как коммит в базу.
         Check 'коммит в личный репозиторий с невобранным ответом — гейт останавливает' {
-            & $renMemory 'полный'
-            Add-Content -LiteralPath $renMem -Encoding utf8 -Value '', '## Оператору', '', '### Какой стенд дать?', 'Стенд нужен под сверку.', '', 'ответ: общий'
-            $reason = Invoke-CommitGate $renRepo $renCommit
-            & $renMemory 'полный'
+            & $tfMemory 'полный'
+            Add-Content -LiteralPath $tfMem -Encoding utf8 -Value '', '## Оператору', '', '### Какой стенд дать?', 'Стенд нужен под сверку.', '', 'ответ: общий'
+            $reason = Invoke-CommitGate $tfRepo $tfCommit
+            & $tfMemory 'полный'
             if ($reason -notmatch 'ответ не вобран') { return "гейт не остановил: «$reason»" }
             return $null
         }
 
         # Папка коллеги — его работа: ни сверка, ни гейт её не судят.
-        $renAlien = Join-Path $renBase 'people\x\flow\scenarios.md'
-        New-Item -ItemType Directory -Force -Path (Split-Path $renAlien -Parent) | Out-Null
-        Set-Content -LiteralPath $renAlien -Encoding utf8 -Value '# Сценарии', '', '## чужой', '1. [Нет такого](stages/none.md)'
+        $tfAlien = Join-Path $tfBase 'people\x\flow\scenarios.md'
+        New-Item -ItemType Directory -Force -Path (Split-Path $tfAlien -Parent) | Out-Null
+        Set-Content -LiteralPath $tfAlien -Encoding utf8 -Value '# Сценарии', '', '## чужой', '1. [Нет такого](stages/none.md)'
 
         Check 'флоу в папке другого оператора — сверка молчит, гейт коммита в базу пускает' {
-            $problem = ExpectNoText $renRepo 'people/x', 'stages/none.md'
+            $problem = ExpectNoText $tfRepo 'people/x', 'stages/none.md'
             if ($problem) { return $problem }
-            $reason = Invoke-CommitGate $renRepo "git -C `"$renBase`" commit -m чужой -- `"$renAlien`""
+            $reason = Invoke-CommitGate $tfRepo "git -C `"$tfBase`" commit -m чужой -- `"$tfAlien`""
             if ($reason) { return "гейт остановил: $reason" }
             return $null
         }
 
         Check 'свой флоу с той же ошибкой — гейт коммита в личный репозиторий останавливает' {
-            $own = Join-Path (Get-OpDir $renBase) 'flow\scenarios.md'
+            $own = Join-Path (Get-OpDir $tfBase) 'flow\scenarios.md'
             $saved = Get-Content -LiteralPath $own -Raw
             Set-Content -LiteralPath $own -Encoding utf8 -Value '# Сценарии', '', '## свой', '1. [Нет такого](stages/none.md)'
-            $reason = Invoke-CommitGate $renRepo "git -C `"$(Get-MeDir $renBase)`" commit -m свой -- `"$own`""
+            $reason = Invoke-CommitGate $tfRepo "git -C `"$(Get-MeDir $tfBase)`" commit -m свой -- `"$own`""
             Set-Content -LiteralPath $own -Encoding utf8 -Value $saved -NoNewline
             if ($reason -notmatch 'такого файла нет') { return "гейт не остановил: «$reason»" }
             return $null
@@ -1993,6 +2088,63 @@ $stands = [ordered]@{
             $dirty = @(& git -C $v6Base status --porcelain --untracked-files=all | Where-Object { $_ })
             if ($dirty.Count) { return "в базе осталось незакоммиченное: $($dirty -join '; ')" }
             return ExpectText $v6Repo 'нет строк: «трекер:», «сервер:», «проект:»'
+        }
+
+        # Формат 7: задачи идут по живому флоу. Память своей машины и соседней получает флоу задачи,
+        # а на памяти со сценарием, которого во флоу нет, перевод встаёт.
+        $v7Repo = Join-Path $root 'v7'
+        $v7Base = Join-Path $root 'base-v7'
+        New-TestRepo $v7Repo
+        Invoke-BaseInit $v7Base | Out-Null
+        & pwsh -NoProfile -File $link -Path $v7Repo -Base $v7Base | Out-Null
+        Set-MarkerFormat $v7Base 7
+        Commit-All $v7Base 'формат 7'
+        $v7Me = Get-MeDir $v7Base
+        New-Item -ItemType Directory -Force -Path (Join-Path $v7Me 'flow\stages') | Out-Null
+        Set-Content -LiteralPath (Join-Path $v7Me 'flow\stages\impl.md') -Encoding utf8 -Value '# Реализация', '', 'исполнитель: оркестратор', 'выход: коммит'
+        Set-Content -LiteralPath (Join-Path $v7Me 'flow\scenarios.md') -Encoding utf8 -Value '# Сценарии', '', '## полный', '1. [Реализация](stages/impl.md)'
+        $v7Task = {
+            param([string]$Path, [string]$Worktree, [string]$Flow)
+            New-Item -ItemType Directory -Force -Path (Split-Path $Path -Parent) | Out-Null
+            Set-Content -LiteralPath $Path -Encoding utf8 -Value @(
+                '# Разбор накладной', "рабочая копия: $Worktree", "сценарий: $Flow", '',
+                '## Агенту', '', '### Сценарий', '- [ ] 1. Реализация', '', '### Шаги', '- [ ] дочитать формат позиции')
+        }
+        $v7Memory = Join-Path $v7Me ('work\' + (& $slug $env:COMPUTERNAME) + '\' + (& $slug $v7Repo) + '.md')
+        $v7Other = Join-Path $v7Me 'work\other-machine\d-projects-v7.md'
+        $v7Lost = Join-Path $v7Me 'work\other-machine\d-projects-lost.md'
+        & $v7Task $v7Memory $v7Repo 'полный'
+        & $v7Task $v7Other 'D:\Projects\v7' 'полный'
+        & $v7Task $v7Lost 'D:\Projects\lost' 'удалённый'
+        Commit-All $v7Me 'задачи формата 7'
+
+        Check 'перевод с формата 7 — сценария задачи во флоу нет: отказ с именем памяти, база не тронута' {
+            $r = Invoke-BaseMigrate $v1Migrate $v7Repo
+            if ($r.code -eq 0) { return 'скрипт не отказал' }
+            if ($r.text -notmatch 'd-projects-lost\.md' -or $r.text -notmatch '«удалённый»') { return "отказ не называет память и сценарий: $($r.text)" }
+            if ((Get-MarkerFormat $v7Base) -ne 7) { return 'формат поднят' }
+            $dirty = @(& git -C $v7Me status --porcelain --untracked-files=all | Where-Object { $_ })
+            if ($dirty.Count) { return "в личном репозитории осталось: $($dirty -join '; ')" }
+            return $null
+        }
+
+        & git -C $v7Me rm -q -- $v7Lost
+        & git -C $v7Me commit -qm 'задача без сценария закрыта' | Out-Null
+
+        Check 'перевод с формата 7 — живые задачи всех машин получают флоу задачи' {
+            $r = Invoke-BaseMigrate $v1Migrate $v7Repo
+            if ($r.code -ne 0) { return "код возврата $($r.code): $($r.text)" }
+            if ((Get-MarkerFormat $v7Base) -ne $kitFormat) { return "формат $(Get-MarkerFormat $v7Base), ожидался $kitFormat" }
+            foreach ($memory in $v7Memory, $v7Other) {
+                $copy = Join-Path ($memory -replace '\.md$', '') 'flow\stages\impl.md'
+                if (-not (Test-Path -LiteralPath $copy -PathType Leaf)) { return "нет флоу задачи у $memory" }
+            }
+            $dirty = @(& git -C $v7Me status --porcelain --untracked-files=all | Where-Object { $_ })
+            if ($dirty.Count) { return "в личном репозитории осталось незакоммиченное: $($dirty -join '; ')" }
+            $got = Invoke-Hook $v7Repo
+            $fails = @($got -split "`n" | Where-Object { $_ -match '^- \*\*FAIL\*\*' })
+            if ($fails.Count) { return "сверка после перевода красная: $($fails -join ' | ')" }
+            return Test-HookText $got 'дочитать формат позиции'
         }
     }
 

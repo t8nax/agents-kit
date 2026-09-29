@@ -906,30 +906,26 @@ function Test-KitFlowMatchesMemory($Flow, [string]$Text) {
     return ($want -join "`n") -eq ($have -join "`n")
 }
 
-# Сценарий задачи: строка есть и называет сценарий из scenarios.md. Разошедшийся со списком
-# сценария перечень этапов — WARN: сценарий могли поправить посреди задачи, и решает это
-# сессия с оператором. Этапов ноль — FAIL, и сравнения со списком нет: у пустого «Сценария»
-# одна причина, а не правка сценария. Нет самого заголовка — причину уже назвала находка
-# формы памяти.
-# Имени нет — сценарий переименован или удалён; кандидата на новое имя сверка называет, но
-# строку не правит: удалённый сценарий с теми же этапами неотличим от переименованного.
-function Get-KitMemoryFlowFindings([string]$Base, [string]$Text, [string]$Label) {
-    $scenarios = Get-KitScenariosLabel $Base
+# Сценарий задачи: копия флоу лежит рядом с памятью, строка «сценарий:» есть и называет
+# сценарий копии, этапы «Агенту → Сценарий» — его этапы в его порядке. Копия после взятия не
+# меняется, поэтому расхождение — ошибка памяти, а не правка флоу: FAIL. Этапов ноль — FAIL
+# без сравнения со списком: у пустого «Сценария» своя причина. Нет самого заголовка — причину
+# уже назвала находка формы памяти.
+function Get-KitMemoryFlowFindings([string]$Base, [string]$Path, [string]$Text, [string]$Label) {
     $name = Get-KitMemoryFlow $Text
     if (-not $name) {
         New-KitFinding 'FAIL' $Label 'нет строки «сценарий:» с именем сценария задачи — сценарий выбирается при взятии'
         return
     }
-    $flows = @(Get-KitFlowList $Base)
-    $flow = Find-KitFlow $flows $name
+    $copy = Join-Path (Get-KitMemoryFlowRoot $Path) $script:KitScenariosFile
+    $scenarios = Get-KitRelativePath $Base (ConvertTo-KitPath $copy)
+    if (-not (Test-Path -LiteralPath $copy -PathType Leaf)) {
+        New-KitFinding 'FAIL' $Label "нет флоу в памяти задачи $scenarios — его копирует task-flow.ps1 при взятии, а задаче, взятой раньше, — перевод базы: забрать личный репозиторий; нет и там — решает оператор"
+        return
+    }
+    $flow = Find-KitFlow @(Read-KitFlowList $copy) $name
     if (-not $flow) {
-        $same = @($flows | Where-Object { $_.items.Count -and (Test-KitFlowMatchesMemory $_ $Text) })
-        if ($same.Count -eq 1) {
-            New-KitFinding 'FAIL' $Label "«сценарий: $name» — такого сценария в $scenarios нет; похоже, он переименован в «$($same[0].name)»: этапы те же — поправить строку «сценарий:» на это имя; сценарий удалён — вопрос оператору"
-        }
-        else {
-            New-KitFinding 'FAIL' $Label "«сценарий: $name» — такого сценария в $scenarios нет: переименован — поправить строку «сценарий:» на новое имя и перенести в «Сценарий» памяти его этапы; удалён — вопрос оператору"
-        }
+        New-KitFinding 'FAIL' $Label "«сценарий: $name» — такого сценария во флоу в памяти задачи $scenarios нет: строка «сценарий:» пишется при взятии и не меняется"
         return
     }
     if (-not (Test-KitAgentSubsection $Text 'Сценарий')) { return }
@@ -940,7 +936,7 @@ function Get-KitMemoryFlowFindings([string]$Base, [string]$Text, [string]$Label)
         return
     }
     if (-not (Test-KitFlowMatchesMemory $flow $Text)) {
-        New-KitFinding 'WARN' $Label "«Агенту → Сценарий» разошлось со списком сценария «$($flow.name)» в $scenarios — сценарий могли поправить посреди задачи: перечитать и решить с оператором"
+        New-KitFinding 'FAIL' $Label "«Агенту → Сценарий» разошлось со списком сценария «$($flow.name)» в $scenarios — переписать этапы и их порядок оттуда"
     }
 }
 
@@ -965,7 +961,7 @@ function Get-KitOwnMemoryFindings([string]$Base, [string]$Path, [string]$Label, 
         }
     }
     Get-KitMemoryLayoutFindings $text $Label
-    Get-KitMemoryFlowFindings $Base $text $Label
+    Get-KitMemoryFlowFindings $Base $Path $text $Label
 
     # Нарезка видна и без коммита: на старте эту проверку зовёт подача. Без заголовка «Шагов»
     # строки шагов не видны, и пропажу называет находка формы памяти.
@@ -1100,20 +1096,10 @@ function Get-KitStepFindings([string]$Base, [string]$Path, [string]$Label) {
 
     $was = ConvertTo-KitMarkdown ($previous -join "`n")
 
-    # Смену сценария от переименования отличает то, что прежний сценарий исчез из scenarios.md,
-    # а у сценария с новым именем те же этапы, что в памяти: правка этапов посреди задачи и так
-    # разрешена, а при переименовании задача остаётся на своём сценарии. scenarios.md читается
-    # с диска, а не из HEAD: переименование уезжает и тем же коммитом, что память, и раньше неё.
     $wasFlow = Get-KitMemoryFlow $was
     $nowFlow = Get-KitMemoryFlow $now
-    $renamed = $false
-    if ($wasFlow -and $nowFlow -and (ConvertTo-KitTitleKey $wasFlow) -ne (ConvertTo-KitTitleKey $nowFlow)) {
-        $flows = @(Get-KitFlowList $Base)
-        $target = Find-KitFlow $flows $nowFlow
-        $renamed = -not (Find-KitFlow $flows $wasFlow) -and $target -and $target.items.Count -and (Test-KitFlowMatchesMemory $target $now)
-    }
-    if ($wasFlow -and -not $renamed -and (ConvertTo-KitTitleKey $wasFlow) -ne (ConvertTo-KitTitleKey $nowFlow)) {
-        New-KitFinding 'FAIL' $Label "«сценарий:» сменилась с «$wasFlow» на «$nowFlow» — сценарий задачи не меняется: сценарий переименован — перенести в «Сценарий» памяти его этапы тем же коммитом; задача переросла сценарий — вопрос оператору о сужении задачи"
+    if ($wasFlow -and (ConvertTo-KitTitleKey $wasFlow) -ne (ConvertTo-KitTitleKey $nowFlow)) {
+        New-KitFinding 'FAIL' $Label "«сценарий:» сменилась с «$wasFlow» на «$nowFlow» — сценарий задачи не меняется: задача переросла сценарий — вопрос оператору о сужении задачи"
     }
     # Без заголовка «Шагов» в одной из версий шаги не сравнить: пропажу называет находка формы
     # памяти, а коммит, который возвращает заголовок, — починка, а не новые шаги.
@@ -1179,9 +1165,15 @@ function Get-KitWorkFindings([string]$Base, [string]$Worktree, $Ceilings) {
     }
     if (-not $mine -or -not (Test-Path -LiteralPath $mine -PathType Container)) { return }
 
+    # Каталог рядом с файлом памяти — её копия флоу; без файла памяти копию не подаст никто.
     foreach ($item in @(Get-ChildItem -LiteralPath $mine -Force -ErrorAction SilentlyContinue)) {
         $label = Get-KitRelativePath $Base (ConvertTo-KitPath $item.FullName)
-        if ($item.PSIsContainer) { New-KitFinding 'WARN' $label 'подкаталог в каталоге машины — память лежит плоско, файлом на рабочее дерево'; continue }
+        if ($item.PSIsContainer) {
+            if (-not (Test-Path -LiteralPath "$($item.FullName).md" -PathType Leaf)) {
+                New-KitFinding 'WARN' $label 'рядом нет файла памяти — флоу задачи, которую закрыли или не довели до памяти: закоммиченный удаляется git rm -r, незакоммиченный заменит следующее взятие; не он — решает оператор'
+            }
+            continue
+        }
         if ($item.Extension -ine '.md') { New-KitFinding 'WARN' $label 'не .md в work/ — work/ держит только память задач'; continue }
 
         $path = ConvertTo-KitPath $item.FullName
@@ -1283,8 +1275,9 @@ function ConvertTo-KitTitleKey([string]$Name) {
 # стоит сразу и глубже него, иначе с -1. Любая другая непустая строка под пунктом уходит
 # в strays сценария: возврат с опечаткой, без дефиса или без отступа иначе пропал бы молча.
 # Разбор без находок: его берут сверка флоу, сверка памяти задачи, которая сводит свою
-# строку «сценарий:» со списком, и flow-share.ps1, который переносит сценарии строками lines —
-# от заголовка до следующего. Get-KitFlowList — флоу оператора этой машины; имени нет — сценариев нет.
+# строку «сценарий:» со списком копии флоу задачи, flow-share.ps1 и копия флоу задачи, которые
+# переносят сценарии строками lines — от заголовка до следующего. Get-KitFlowList — флоу
+# оператора этой машины; имени нет — сценариев нет.
 function Get-KitFlowList([string]$Base) {
     $operator = Get-KitOperatorRoot $Base
     if (-not $operator) { return [System.Collections.Generic.List[object]]::new() }
@@ -1393,6 +1386,86 @@ function Read-KitStage([string]$Path, [string]$File, [string]$FlowLabel) {
         $stage.body.Add($line)
     }
     return $stage
+}
+
+# Этапы флоу, который лежит в Root — личном репозитории, папке оператора или копии флоу
+# задачи: файлы этапов по имени в нижнем регистре.
+function Read-KitStages([string]$Root, [string]$Label) {
+    $stages = [ordered]@{}
+    $dir = Join-Path (Join-Path $Root $script:KitFlowDir) $script:KitStagesDir
+    foreach ($file in @(Get-ChildItem -LiteralPath $dir -File -Filter '*.md' -Force -ErrorAction SilentlyContinue | Sort-Object Name)) {
+        $stages[$file.Name.ToLowerInvariant()] = Read-KitStage $file.FullName $file.Name $Label
+    }
+    return $stages
+}
+
+# Строки сценария без хвостовых пустых — так сценарии сравниваются и склеиваются.
+function Join-KitSection($Lines) {
+    $list = [System.Collections.Generic.List[string]]::new()
+    foreach ($line in $Lines) { $list.Add($line) }
+    while ($list.Count -and -not $list[$list.Count - 1].Trim()) { $list.RemoveAt($list.Count - 1) }
+    return ($list -join "`n")
+}
+
+# Незакоммиченное в этих путях — чужая работа или недоделанная правка: скрипт, который
+# переносит флоу, берёт закоммиченное и незакоммиченного не трогает.
+function Assert-KitCommitted([string]$Repo, [string[]]$Paths, [string]$What) {
+    $dirty = @(& git -C $Repo status --porcelain=v1 --untracked-files=all -- @Paths 2>$null | Where-Object { $_ })
+    if ($LASTEXITCODE -ne 0) { throw "git не прочитал состояние «$Repo»" }
+    if (-not $dirty.Count) { return }
+    $named = (@($dirty | Select-Object -First 3) | ForEach-Object { $_.Substring(3) }) -join ', '
+    if ($dirty.Count -gt 3) { $named += " и ещё $($dirty.Count - 3)" }
+    throw "в $What незакоммиченное: $named — скрипт работает с закоммиченным; закоммитить или убрать, решает оператор"
+}
+
+function Get-KitFindingLines($Findings) {
+    return (@($Findings) | ForEach-Object { "- $($_.severity) $($_.file) — $($_.message)" }) -join "`n"
+}
+
+# Копия флоу задачи: из флоу личного репозитория Personal в каталог Root рядом с памятью —
+# общий текст scenarios.md, раздел сценария задачи и файлы этапов: его и тех, на которые
+# ссылаются их описания, по цепочке, — этап вне сценария читается, когда понадобился его выход.
+# Субагентов в копии нет: в рабочей копии их держит раскладка. Пишут копию task-flow.ps1
+# при взятии и шаг перевода 008; возвращает { name; stages — названия этапов }, сценария
+# во флоу нет — $null и ничего не пишет.
+function Copy-KitTaskFlow([string]$Personal, [string]$Scenario, [string]$Root) {
+    $scenarios = Join-Path $Personal $script:KitScenariosFile
+    $flow = Find-KitFlow @(Read-KitFlowList $scenarios) $Scenario
+    if (-not $flow) { return $null }
+
+    $stages = Read-KitStages $Personal ''
+    $byName = @{}
+    foreach ($stage in $stages.Values) {
+        if ($stage.name) { $byName[(ConvertTo-KitTitleKey $stage.name)] = $stage }
+    }
+    $taken = [ordered]@{}
+    $queue = [System.Collections.Generic.Queue[object]]::new()
+    foreach ($item in $flow.items) {
+        if ($item.file -and $stages.Contains($item.file.ToLowerInvariant())) { $queue.Enqueue($stages[$item.file.ToLowerInvariant()]) }
+    }
+    while ($queue.Count) {
+        $stage = $queue.Dequeue()
+        $key = $stage.file.ToLowerInvariant()
+        if ($taken.Contains($key)) { continue }
+        $taken[$key] = $stage
+        foreach ($line in $stage.body) {
+            foreach ($ref in [regex]::Matches($line, '(?i)\bэтап[а-яё]*\s+«([^»]+)»')) {
+                $target = $byName[(ConvertTo-KitTitleKey $ref.Groups[1].Value)]
+                if ($target) { $queue.Enqueue($target) }
+            }
+        }
+    }
+
+    $parts = @((Join-KitSection (Get-KitFlowPreamble $scenarios)).Trim(), (Join-KitSection $flow.lines)) | Where-Object { $_ }
+    $target = Join-Path $Root $script:KitFlowDir
+    $stagesTarget = Join-Path $target $script:KitStagesDir
+    New-Item -ItemType Directory -Force -Path $stagesTarget | Out-Null
+    Set-Content -LiteralPath (Join-Path $Root $script:KitScenariosFile) -Value (($parts -join "`n`n") + "`n") -Encoding utf8 -NoNewline
+    $source = Join-Path (Join-Path $Personal $script:KitFlowDir) $script:KitStagesDir
+    foreach ($stage in $taken.Values) {
+        Copy-Item -LiteralPath (Join-Path $source $stage.file) -Destination (Join-Path $stagesTarget $stage.file) -Force
+    }
+    return [pscustomobject]@{ name = $flow.name; stages = @($taken.Values | ForEach-Object { $_.name }) }
 }
 
 function Get-KitStageHelpers($Stage) {
@@ -1703,14 +1776,45 @@ function Get-KitCommitFindings([string]$Base, [string]$Worktree, [string[]]$File
     Get-KitOrphanArtifactFindings $artifacts $Base $Base
 }
 
-# Коммит в личный репозиторий: рамки, флоу, бэклог, память и их артефакты. Подписи находок —
-# от корня базы.
+function Test-KitInHead([string]$Repo, [string]$Rel) {
+    & git -C $Repo cat-file -e "HEAD:$($Rel.Replace([char]92, [char]47))" 2>$null
+    return $LASTEXITCODE -eq 0
+}
+
+# Файл копии флоу задачи в коммите. Копия пишется коммитом взятия и уходит коммитом закрытия
+# вместе с памятью, а между ними не меняется: задача идёт по флоу, с которым её взяли. Коммит
+# каталогом называет и нетронутые файлы — они сверяются с HEAD.
+function Get-KitTaskFlowCommitFindings([string]$Personal, [string]$Own, [string]$Path, [string]$Rel, [string]$Root, [string]$Label) {
+    $ownRoot = Get-KitMemoryFlowRoot $Own
+    if (-not $ownRoot -or $Root -ine $ownRoot) {
+        New-KitFinding 'FAIL' $Label 'флоу в памяти задачи другой рабочей копии в коммите — не свой, решает оператор'
+        return
+    }
+    $inHead = Test-KitInHead $Personal $Rel
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        if ($inHead -and (Test-Path -LiteralPath $Own -PathType Leaf)) {
+            New-KitFinding 'FAIL' $Label 'флоу в памяти задачи удаляется только вместе с её файлом — при закрытии задачи'
+        }
+        return
+    }
+    if ($inHead) {
+        & git -C $Personal diff --quiet HEAD -- $Rel.Replace([char]92, [char]47) 2>$null
+        if ($LASTEXITCODE -eq 0) { return }
+    }
+    elseif (-not (Test-KitInHead $Personal (Get-KitRelativePath $Personal (ConvertTo-KitPath (Join-Path $Root $script:KitScenariosFile))))) { return }
+    New-KitFinding 'FAIL' $Label 'флоу в памяти задачи не меняется — задача идёт по флоу, с которым её взяли; правка флоу — /flow, для задач, взятых после неё'
+}
+
+# Коммит в личный репозиторий: рамки, флоу, бэклог, память, копия флоу задачи и артефакты.
+# Подписи находок — от корня базы.
 function Get-KitPersonalCommitFindings([string]$Base, [string]$Worktree, [string[]]$Files) {
     $rules = Get-KitLayoutRules
     $personal = Get-KitPersonalDir $Base
     $own = Get-KitWorkMemoryPath $personal $Worktree
     $served = @{}
     foreach ($file in @(Get-KitServedFiles $Base)) { $served[(ConvertTo-KitPath $file.path).ToLowerInvariant()] = $file }
+    $committed = @{}
+    foreach ($file in @($Files | Where-Object { $_ })) { $committed[(ConvertTo-KitPath $file).ToLowerInvariant()] = $true }
 
     $seen = @{}
     $flowTouched = $false
@@ -1725,6 +1829,11 @@ function Get-KitPersonalCommitFindings([string]$Base, [string]$Worktree, [string
         # Удалённый этап ломает сценарий, который на него ссылается, поэтому сверку флоу
         # запускает и удаление.
         if ($rel.StartsWith($script:KitFlowDir + '\', [StringComparison]::OrdinalIgnoreCase)) { $flowTouched = $true }
+        $copy = [regex]::Match($rel, '^(work\\[^\\]+\\[^\\]+)\\')
+        if ($copy.Success) {
+            Get-KitTaskFlowCommitFindings $personal $own $path $rel (ConvertTo-KitPath (Join-Path $personal $copy.Groups[1].Value)) $label
+            continue
+        }
         Add-KitFormerArtifactRefs $artifacts $personal $rel
         if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { continue }
 
@@ -1743,6 +1852,13 @@ function Get-KitPersonalCommitFindings([string]$Base, [string]$Worktree, [string
                 Get-KitAnsweredQuestionFindings $path $label
                 Get-KitStepFindings $Base $path $label
                 Get-KitTakenRecordFindings $Base $path $label $Worktree
+                # Копия флоу, снятая при взятии, уходит тем же коммитом, что память: иначе
+                # задача шла бы по копии, которой нет в истории.
+                $copy = ConvertTo-KitPath (Join-Path (Get-KitMemoryFlowRoot $path) $script:KitScenariosFile)
+                $copyRel = Get-KitRelativePath $personal $copy
+                if ((Test-Path -LiteralPath $copy -PathType Leaf) -and -not (Test-KitInHead $personal $copyRel) -and -not $committed.ContainsKey($copy.ToLowerInvariant())) {
+                    New-KitFinding 'FAIL' $label "флоу в памяти задачи $(Get-KitRelativePath $Base $copy) не в коммите — он уходит тем же коммитом, что файл памяти: добавить его каталог"
+                }
             }
             else { New-KitFinding 'FAIL' $label 'память другой рабочей копии в коммите — не своя, решает оператор' }
         }
