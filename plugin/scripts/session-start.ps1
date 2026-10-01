@@ -35,19 +35,20 @@ function Read-KitReadFirst([string]$InvariantsPath, [string]$BaseDir) {
 
 ## Прочитать первым делом
 
-До всякой работы прочитать целиком — по ним работает эта сессия. HTML-комментарии в файлах базы — подсказки шаблона, а не знание проекта.
+До всякой работы прочитать целиком. HTML-комментарии в файлах базы — подсказки шаблона, а не знание проекта.
 
 $($lines -join "`n")
 "@
 }
 
-# Агент сессии — по входу хука: у Codex журнал сессии называется rollout-*.jsonl, у Claude Code
-# лежит под .claude. Не опознан — так и названо, а не подставлен агент по умолчанию.
+# Агент сессии — по входу хука: у Codex журнал сессии называется rollout-*.jsonl. Claude Code
+# держит журнал под .claude, а с каталогом настроек в другом месте его выдают переменные,
+# которые он ставит своим процессам. Codex проверяется первым: запущенный из терминала Claude
+# Code, он наследует эти переменные. Не опознан — так и названо, а не подставлен агент по умолчанию.
 function Get-KitSessionAgent($Payload) {
     $transcript = [string]$Payload.transcript_path
-    if (-not $transcript) { return $null }
-    if ((Split-Path -Leaf $transcript) -like 'rollout-*') { return 'Codex' }
-    if ($transcript -match '[\\/]\.claude[\\/]') { return 'Claude Code' }
+    if ($transcript -and (Split-Path -Leaf $transcript) -like 'rollout-*') { return 'Codex' }
+    if ($transcript -match '[\\/]\.claude[\\/]' -or $env:CLAUDE_PROJECT_DIR -or $env:CLAUDECODE) { return 'Claude Code' }
     return $null
 }
 
@@ -140,8 +141,9 @@ function Read-KitBaseFindings([string]$BaseDir, [string]$Worktree) {
     $lines = @($shown | ForEach-Object { "- **$($_.severity)** ``$($_.file)`` — $($_.message)" })
     $rest = $findings.Count - $shown.Count
     if ($rest -gt 0) {
-        $check = ConvertTo-KitPath (Join-Path $PSScriptRoot 'base-check.ps1')
-        $lines += "- …и ещё $rest — все находки: ``pwsh -NoProfile -Command `". '$check'; Get-KitBaseFindings '$BaseDir' '$Worktree' | Format-List`"``"
+        # Апостроф в пути удваивается: пути стоят в одинарных кавычках PowerShell.
+        $check, $base, $tree = @((Join-Path $PSScriptRoot 'base-check.ps1'), $BaseDir, $Worktree) | ForEach-Object { (ConvertTo-KitPath $_).Replace("'", "''") }
+        $lines += "- …и ещё $rest — все находки: ``pwsh -NoProfile -Command `". '$check'; Get-KitBaseFindings '$base' '$tree' | Format-List`"``"
     }
     return @"
 
