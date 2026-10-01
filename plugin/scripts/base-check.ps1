@@ -414,7 +414,7 @@ function Get-KitBacklogFieldFindings([string]$Label, [string]$Head, $Entries, $R
     foreach ($entry in $Entries) {
         foreach ($name in $fields) {
             if (-not $entry.keys.Contains($name)) {
-                Add-KitGroupedFinding $groups 'WARN' "нет поля «$name»" 'проставит /backlog' $entry.label
+                Add-KitGroupedFinding $groups 'WARN' "нет поля «$name»" 'проставит скилл backlog' $entry.label
                 continue
             }
             $value = $entry.keys[$name]
@@ -454,7 +454,7 @@ function Get-KitBacklogPrefix([string]$Text) {
 # Номер записи бэклога выдаёт счётчик в шапке файла: из оставшихся записей номер не вычислить,
 # по истории git тоже — она не видит незакоммиченных записей соседней копии. Запись — заголовок
 # «##», под ним подряд пары «ключ: значение». Повтор номера, номер чужими буквами и счётчик не
-# выше наибольшего — FAIL; запись без номера и файл без счётчика чинит /backlog — WARN.
+# выше наибольшего — FAIL; запись без номера и файл без счётчика чинит скилл backlog — WARN.
 function Get-KitBacklogFindings([string]$Path, [string]$Label, $Rules) {
     $text = Read-KitMarkdown $Path
     $prefix = Get-KitBacklogPrefix $text
@@ -478,7 +478,7 @@ function Get-KitBacklogFindings([string]$Path, [string]$Label, $Rules) {
                 # иначе границы между ним и соседним номером не видно.
                 $title = $line -replace '^#+\s*', ''
                 if ($title.Length -gt 60) { $title = $title.Substring(0, 60) + '…' }
-                # Запись чужими буквами не считается ненумерованной: выдай ей /backlog свой номер,
+                # Запись чужими буквами не считается ненумерованной: выдай скилл backlog ей свой номер,
                 # заголовок оператора переписался бы молча.
                 if ($prefix -and $line -match '^##\s+[A-Za-z][A-Za-z0-9]*-\d+\b') {
                     Add-KitGroupedFinding $foreign 'FAIL' "нумерованы не буквами «$prefix-»" 'выдать номер счётчиком' "«$title»"
@@ -508,13 +508,13 @@ function Get-KitBacklogFindings([string]$Path, [string]$Label, $Rules) {
         New-KitFinding 'FAIL' $Label "номер $prefix-$n у $($numbers[$n]) записей — одной из записей выдать новый через счётчик"
     }
     if ($unnumbered) {
-        New-KitFinding 'WARN' $Label "$unnumbered записей без номера — пронумерует /backlog"
+        New-KitFinding 'WARN' $Label "$unnumbered записей без номера — пронумерует скилл backlog"
     }
     Get-KitGroupedFindings $foreign $Label
 
     $counter = Get-KitBacklogCounter $text
     if (-not $counter.Success) {
-        New-KitFinding 'WARN' $Label 'нет строки «следующий номер: <буквы>-N» — поставит /backlog'
+        New-KitFinding 'WARN' $Label 'нет строки «следующий номер: <буквы>-N» — поставит скилл backlog'
     }
     else {
         $next = [int]$counter.Groups[2].Value
@@ -553,12 +553,12 @@ function Get-KitTrackerKeys([string]$Text) {
 }
 
 # Трекер, сервер и проект — строками, а не прозой: сверка ловит опечатку в адресе и проекте,
-# номер задачи опознаётся по виду из таблицы трекеров, а не догадкой по словам, и /tracker
+# номер задачи опознаётся по виду из таблицы трекеров, а не догадкой по словам, и скилл tracker
 # сверяет записанное с тем, куда смотрит инструмент. Незнакомый трекер не отвергается: кит
 # в трекеры не ходит, и ходить в незнакомый инструменту оператора это не мешает. В сеть
 # сверка не ходит — адрес проверяется только видом.
 function Get-KitTrackerKeyFindings([string]$Text, [string]$Label, $Rules) {
-    $fix = 'поправить скиллом /tracker'
+    $fix = 'поправить скиллом tracker'
     $keys = @(Get-KitTrackerKeys $Text)
     $values = @{}
     $groups = [ordered]@{}
@@ -593,7 +593,7 @@ function Get-KitTrackerKeyFindings([string]$Text, [string]$Label, $Rules) {
     }
 }
 
-# tracker.md — разделы из таблицы раскладки: /drive и /backlog читают свой раздел по заголовку,
+# tracker.md — разделы из таблицы раскладки: скилл drive и скилл backlog читают свой раздел по заголовку,
 # и нет его — момент прошёл бы без трекера молча. Раздел — заголовок «##» вне блока кода
 # до следующего такого же; пустой — без единой непустой строки после вырезки комментариев.
 function Get-KitTrackerFindings([string]$Path, [string]$Label, $Rules) {
@@ -618,11 +618,11 @@ function Get-KitTrackerFindings([string]$Path, [string]$Label, $Rules) {
 
     $groups = [ordered]@{}
     foreach ($name in $Rules.trackerSections) {
-        if (-not $sections.Contains($name)) { Add-KitGroupedFinding $groups 'FAIL' 'нет разделов' 'дописать скиллом /tracker' "«## $name»" }
-        elseif (-not $sections[$name]) { Add-KitGroupedFinding $groups 'FAIL' 'пусты разделы' 'написать скиллом /tracker' "«## $name»" }
+        if (-not $sections.Contains($name)) { Add-KitGroupedFinding $groups 'FAIL' 'нет разделов' 'дописать скиллом tracker' "«## $name»" }
+        elseif (-not $sections[$name]) { Add-KitGroupedFinding $groups 'FAIL' 'пусты разделы' 'написать скиллом tracker' "«## $name»" }
     }
     foreach ($name in $sections.Keys) {
-        if ($Rules.trackerSections -notcontains $name) { Add-KitGroupedFinding $groups 'FAIL' 'разделы не из таблицы раскладки' 'своих разделов не заводят — поправить скиллом /tracker' "«## $name»" }
+        if ($Rules.trackerSections -notcontains $name) { Add-KitGroupedFinding $groups 'FAIL' 'разделы не из таблицы раскладки' 'своих разделов не заводят — поправить скиллом tracker' "«## $name»" }
     }
     Get-KitGroupedFindings $groups $Label
     if ($sections['Где задачи']) { Get-KitTrackerKeyFindings $text $Label $Rules }
@@ -641,7 +641,7 @@ function Get-KitRootFindings([string]$Base, $Ceilings) {
     if ($operator) {
         $shown = Join-Path (Get-KitOperatorDir $Base $operator.name) ($script:KitScenariosFile -replace '/', '\')
         if (-not (Test-Path -LiteralPath $shown -PathType Leaf)) {
-            New-KitFinding 'WARN' (Get-KitRelativePath $Base (ConvertTo-KitPath $shown)) 'в папке оператора нет флоу — коллегам не видно, что имя занято; выложить ли флоу скиллом /flow, решает оператор'
+            New-KitFinding 'WARN' (Get-KitRelativePath $Base (ConvertTo-KitPath $shown)) 'в папке оператора нет флоу — коллегам не видно, что имя занято; выложить ли флоу скиллом flow, решает оператор'
         }
     }
     $fix = 'довезёт повторный base-init.ps1'
@@ -1522,7 +1522,7 @@ function Get-KitFlowFindings([string]$Base, [string]$Worktree, $Rules) {
     # Место этапа в каждом сценарии: файл этапа — его индекс в списке.
     $flows = @(Get-KitFlowList $Base)
     if (-not $flows.Count) {
-        New-KitFinding 'WARN' $scenarios 'сценариев нет — написать с оператором хотя бы один этап и один сценарий скиллом /flow'
+        New-KitFinding 'WARN' $scenarios 'сценариев нет — написать с оператором хотя бы один этап и один сценарий скиллом flow'
     }
     $orders = @()
     $flowNames = @{}
@@ -1802,7 +1802,7 @@ function Get-KitTaskFlowCommitFindings([string]$Personal, [string]$Own, [string]
         if ($LASTEXITCODE -eq 0) { return }
     }
     elseif (-not (Test-KitInHead $Personal (Get-KitRelativePath $Personal (ConvertTo-KitPath (Join-Path $Root $script:KitScenariosFile))))) { return }
-    New-KitFinding 'FAIL' $Label 'флоу в памяти задачи не меняется — задача идёт по флоу, с которым её взяли; правка флоу — /flow, для задач, взятых после неё'
+    New-KitFinding 'FAIL' $Label 'флоу в памяти задачи не меняется — задача идёт по флоу, с которым её взяли; правка флоу — скилл flow, для задач, взятых после неё'
 }
 
 # Коммит в личный репозиторий: рамки, флоу, бэклог, память, копия флоу задачи и артефакты.

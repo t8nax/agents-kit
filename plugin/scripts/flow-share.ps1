@@ -28,7 +28,7 @@ if (-not $Path) { $Path = (Get-Location).Path }
 $state = Get-KitLinkState $Path
 switch ($state.status) {
     'NotGit'    { throw "«$Path» не под git — это не рабочая копия проекта под китом" }
-    'NoPointer' { throw "каталог «$($state.workspace)» под китом не числится — сначала взять его под кит скиллом /onboard" }
+    'NoPointer' { throw "каталог «$($state.workspace)» под китом не числится — сначала взять его под кит скиллом onboard" }
     'Linked'    { }
     { $_ -in 'Outdated', 'Newer' } { throw (Get-KitFormatProblem $state) }
     'Unmerged'  { throw (Get-KitUnmergedProblem $state) }
@@ -64,7 +64,7 @@ if ($Action -eq 'Publish') {
     Assert-KitCommitted $base @($peopleRel) "папке оператора $peopleRel"
 
     $fails = @(Get-KitFlowFindings $base $state.worktree $rules | Where-Object { $_.severity -eq 'FAIL' })
-    if ($fails.Count) { throw "во флоу красные находки — выкладывается флоу без них, починить скиллом /flow:`n$(Get-KitFindingLines $fails)" }
+    if ($fails.Count) { throw "во флоу красные находки — выкладывается флоу без них, починить скиллом flow:`n$(Get-KitFindingLines $fails)" }
     if (-not (Test-Path -LiteralPath (Join-Path $personal $script:KitScenariosFile) -PathType Leaf)) {
         throw "в личном репозитории нет $($script:KitScenariosFile) — выкладывать нечего"
     }
@@ -173,7 +173,7 @@ foreach ($key in $takenStages.Keys) {
     }
     if (-not $stage.name) { continue }
     $twin = @($ownStages.Values | Where-Object { $_.name -and (ConvertTo-KitTitleKey $_.name) -eq (ConvertTo-KitTitleKey $stage.name) })
-    if ($twin.Count) { $blockers.Add("этап «$($stage.name)»: у вас он в stages/$($twin[0].file), а берётся stages/$($stage.file) — развести названия скиллом /flow") }
+    if ($twin.Count) { $blockers.Add("этап «$($stage.name)»: у вас он в stages/$($twin[0].file), а берётся stages/$($stage.file) — развести названия скиллом flow") }
 }
 foreach ($name in $takenAgents) {
     $own = Join-Path (Join-Path $personal $agentsDir) "$name.md"

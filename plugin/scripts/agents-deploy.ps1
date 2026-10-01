@@ -19,7 +19,7 @@ if (-not $Path) { $Path = (Get-Location).Path }
 $state = Get-KitLinkState $Path
 switch ($state.status) {
     'NotGit'    { throw "«$Path» не под git — это не рабочая копия проекта под китом" }
-    'NoPointer' { throw "каталог «$($state.workspace)» под китом не числится — сначала взять его под кит скиллом /onboard" }
+    'NoPointer' { throw "каталог «$($state.workspace)» под китом не числится — сначала взять его под кит скиллом onboard" }
     'Linked'    { }
     { $_ -in 'Outdated', 'Newer' } { throw (Get-KitFormatProblem $state) }
     'Unmerged'  { throw (Get-KitUnmergedProblem $state) }

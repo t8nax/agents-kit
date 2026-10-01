@@ -170,4 +170,4 @@ for ($n = $state.format + 1; $n -le $state.kitFormat; $n++) {
     Write-Host "  формат ${n}: $($step.slug) — коммит $sha"
 }
 
-Write-Host "База переведена на формат $($state.kitFormat). Работа со знанием — с новой сессии: /clear." -ForegroundColor Green
+Write-Host "База переведена на формат $($state.kitFormat). Работа со знанием — с новой сессии." -ForegroundColor Green

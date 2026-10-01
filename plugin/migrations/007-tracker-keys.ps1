@@ -14,5 +14,5 @@ if (-not (Test-Path -LiteralPath $tracker -PathType Leaf)) { throw 'tracker.md: 
 
 $keys = @(Get-KitTrackerKeys (Read-KitMarkdown $tracker) | ForEach-Object { $_.key })
 if (@('трекер', 'сервер', 'проект' | Where-Object { $keys -notcontains $_ }).Count) {
-    Write-Host '  в tracker.md нет строк трекера, сервера и проекта — дописать скиллом /tracker; до тех пор сессии в трекер не ходят'
+    Write-Host '  в tracker.md нет строк трекера, сервера и проекта — дописать скиллом tracker; до тех пор сессии в трекер не ходят'
 }

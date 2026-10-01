@@ -19,7 +19,7 @@ if (-not $Path) { $Path = (Get-Location).Path }
 $state = Get-KitLinkState $Path
 switch ($state.status) {
     'NotGit'    { throw "«$Path» не под git — это не рабочая копия проекта под китом" }
-    'NoPointer' { throw "каталог «$($state.workspace)» под китом не числится — сначала взять его под кит скиллом /onboard" }
+    'NoPointer' { throw "каталог «$($state.workspace)» под китом не числится — сначала взять его под кит скиллом onboard" }
     'Linked'    { }
     { $_ -in 'Outdated', 'Newer' } { throw (Get-KitFormatProblem $state) }
     'Unmerged'  { throw (Get-KitUnmergedProblem $state) }
@@ -43,7 +43,7 @@ if (Test-Path -LiteralPath $root) {
 
 Assert-KitCommitted $personal @($script:KitFlowDir) 'флоу личного репозитория'
 $fails = @(Get-KitFlowFindings $base $state.worktree (Get-KitLayoutRules) | Where-Object { $_.severity -eq 'FAIL' })
-if ($fails.Count) { throw "во флоу красные находки — задача по такому флоу не берётся, починить скиллом /flow:`n$(Get-KitFindingLines $fails)" }
+if ($fails.Count) { throw "во флоу красные находки — задача по такому флоу не берётся, починить скиллом flow:`n$(Get-KitFindingLines $fails)" }
 
 $copy = Copy-KitTaskFlow $personal $Scenario $root
 if (-not $copy) {
