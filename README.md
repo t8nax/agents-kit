@@ -43,7 +43,7 @@ Codex по умолчанию пишет только внутри открыт�
 
 ```toml
 [sandbox_workspace_write]
-writable_roots = ['C:\путь\к\базе']
+writable_roots = ['<папка базы>']
 network_access = true
 ```
 

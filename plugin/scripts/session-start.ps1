@@ -136,6 +136,8 @@ function Read-KitBaseFindings([string]$BaseDir, [string]$Worktree) {
     try { $findings = @(Get-KitBaseFindings $BaseDir $Worktree) } catch { return '' }
     if (-not $findings.Count) { return '' }
     # Сверх десятка находок шапка вышла бы за предел Codex: остаток называется числом и командой.
+    # Красные идут первыми — за десятком прячутся предупреждения, а не то, что чинить до записи.
+    $findings = @($findings | Where-Object { $_.severity -eq 'FAIL' }) + @($findings | Where-Object { $_.severity -ne 'FAIL' })
     $shown = @($findings | Select-Object -First $script:KitShownFindings)
     $lines = @($shown | ForEach-Object { "- **$($_.severity)** ``$($_.file)`` — $($_.message)" })
     $rest = $findings.Count - $shown.Count

@@ -38,7 +38,7 @@ $script:failed = 0
 function Ok  ([string]$m) { Write-Host "[ OK ]   $m"; $script:passed++ }
 function Bad ([string]$m) { Write-Host "[ FAIL ] $m" -ForegroundColor Red; $script:failed++ }
 
-# Хук зовётся дочерним процессом, как его зовёт Claude Code: без окна, и консоль у него своя,
+# Хук зовётся дочерним процессом, как его зовут Claude Code и Codex: без окна, и консоль у него своя,
 # в кодовой странице системы, а не консоль сверки; JSON в stdin — UTF-8. Ответ — вывод хука.
 function Invoke-HookProcess([string]$Hook, [string]$Payload) {
     $info = [System.Diagnostics.ProcessStartInfo]::new('pwsh')
@@ -57,18 +57,49 @@ function Invoke-HookProcess([string]$Hook, [string]$Payload) {
     return $out.Trim()
 }
 
-function Invoke-Hook([string]$Dir, [string]$Hook = $hook) {
-    $payload = @{ cwd = $Dir } | ConvertTo-Json -Compress
-    $text = Invoke-HookProcess $Hook $payload
+function Invoke-HookHeader([string]$Dir, [string]$Hook = $hook, [string]$Transcript) {
+    $input_ = @{ cwd = $Dir }
+    if ($Transcript) { $input_.transcript_path = $Transcript }
+    $text = Invoke-HookProcess $Hook ($input_ | ConvertTo-Json -Compress)
     if (-not $text) { return '' }
     try { return [string](($text | ConvertFrom-Json).hookSpecificOutput.additionalContext) }
     catch { return "!!НЕ-JSON!! $text" }
 }
 
-# Гейт коммита получает команду и каталог в stdin, как от Claude Code. Ответ — причина отказа
-# или пустая строка, если коммит идёт.
-function Invoke-CommitGate([string]$Dir, [string]$Command, [string]$Gate = $script:gate) {
-    $payload = @{ cwd = $Dir; tool_input = @{ command = $Command } } | ConvertTo-Json -Compress
+# Что знает сессия после старта: шапка и то, что она велит прочитать первым делом, — файлы из
+# «Прочитать первым делом» и своя память. Проверки знания смотрят сюда, а не в одну шапку:
+# сессия видит текст файлов, а шапка только называет их.
+function Invoke-Hook([string]$Dir, [string]$Hook = $hook) {
+    $got = Invoke-HookHeader $Dir $Hook
+    if (-not $got -or $got.StartsWith('!!НЕ-JSON!!')) { return $got }
+    $paths = @()
+    $first = [regex]::Match($got, '(?ms)^## Прочитать первым делом\s*$(.*?)(?=^## |\z)')
+    if ($first.Success) {
+        $paths += @([regex]::Matches($first.Groups[1].Value, '(?m)^- .*`([A-Za-z]:\\[^`]+)`\s*$') | ForEach-Object { $_.Groups[1].Value })
+    }
+    $own = [regex]::Match($got, '(?m)^Файл `([A-Za-z]:\\[^`]+\.md)`, и ведёт его эта сессия')
+    if ($own.Success) { $paths += $own.Groups[1].Value }
+    $read = foreach ($path in $paths) {
+        if (Test-Path -LiteralPath $path -PathType Leaf) { "`n`n<<< $path`n$(Get-Content -LiteralPath $path -Raw -Encoding utf8)" }
+    }
+    return $got + ($read -join '')
+}
+
+# Гейт коммита получает команду и каталог в stdin, как от Claude Code, а с -Codex — весь вход,
+# какой шлёт Codex. Ответ — причина отказа или пустая строка, если коммит идёт.
+function Invoke-CommitGate([string]$Dir, [string]$Command, [string]$Gate = $script:gate, [switch]$Codex) {
+    $input_ = [ordered]@{ cwd = $Dir; tool_input = @{ command = $Command } }
+    if ($Codex) {
+        $input_.session_id = '01a0f738-c994-7363-80d4-d2394d0cb96b'
+        $input_.turn_id = '01a0f738-cf43-70a0-a842-ea419156c26b'
+        $input_.transcript_path = 'C:\Users\x\.codex\sessions\2026\10\01\rollout-2026-10-01T14-28-10-01a0f738.jsonl'
+        $input_.hook_event_name = 'PreToolUse'
+        $input_.model = 'gpt'
+        $input_.permission_mode = 'default'
+        $input_.tool_name = 'Bash'
+        $input_.tool_use_id = 'exec-f3a12c9e'
+    }
+    $payload = $input_ | ConvertTo-Json -Compress
     $text = Invoke-HookProcess $Gate $payload
     if (-not $text) { return '' }
     try { return [string](($text | ConvertFrom-Json).hookSpecificOutput.permissionDecisionReason) }
@@ -467,14 +498,39 @@ $stands = [ordered]@{
 
         # Имя проекта — заголовок product.md без хвоста каркаса.
         Check 'связанная копия — имя проекта в шапке подачи' { Test-HookText $linked "- Проект: Сверочный сервис`n" }
-        Check 'пример из HTML-комментария в контекст не попадает' { Test-HookText $linked -Lacks 'пример в комментарии шаблона' }
+        # Файлы знания сессия читает сама, с комментариями: шапка называет их подсказками шаблона.
+        $header = Invoke-HookHeader $repo
+        Check 'шапка называет HTML-комментарии подсказками, сама их не несёт' {
+            Test-HookText $header 'HTML-комментарии в файлах базы — подсказки шаблона' -Lacks 'пример в комментарии шаблона', 'сверка остатков идёт ночным прогоном'
+        }
+
+        # Codex режет вывод хука примерно до 10 тысяч знаков: шапка держится в этом пределе.
+        Check 'шапка в пределе Codex — пути вместо содержимого' {
+            $problem = Test-HookText $header '## Прочитать первым делом', 'invariants.md', 'product.md' -Lacks 'Три слоя'
+            if ($problem) { return $problem }
+            if ($header.Length -gt 10000) { return "шапка $($header.Length) знаков — больше 10000" }
+            return $null
+        }
+
+        # Агент сессии — по журналу из входа хука; не опознан — так и названо.
+        Check 'агент сессии — Codex, Claude Code или «не опознан»' {
+            $cases = @(
+                @('C:\Users\x\.codex\sessions\2026\10\01\rollout-2026-10-01T10-00-00-abc.jsonl', 'Агент сессии: Codex'),
+                @('C:\Users\x\.claude\projects\c-repo\abc.jsonl', 'Агент сессии: Claude Code'),
+                @('', 'Агент сессии: не опознан'))
+            foreach ($case in $cases) {
+                $problem = Test-HookText (Invoke-HookHeader $repo $hook $case[0]) $case[1]
+                if ($problem) { return "журнал «$($case[0])»: $problem" }
+            }
+            return $null
+        }
 
         # Решения подаются оглавлением: строка «когда:» приезжает, тело файла — нет.
         $decisionsDir = Join-Path $base 'decisions'
         Check 'решений нет — сессии названо, куда их заводить' { Test-HookText $linked 'решений пока нет' }
 
         # Что подаётся и что нет — одно состояние на один вызов хука. Рамки — свои: подаются из личного
-        # репозитория, а лежащее в people\ не подаётся. Флоу нужен только /flow и /drive, и в каждую
+        # репозитория, а лежащее в people\ не подаётся. Флоу нужен только скиллам flow и drive, и в каждую
         # сессию он не приезжает. Файл решений остаётся для проверки без «когда:».
         $team = Join-Path $base 'team.md'
         $own = Join-Path (Get-OpDir $base) 'autonomy.md'
@@ -507,8 +563,25 @@ $stands = [ordered]@{
         Check 'сценарии и этапы базы — в контекст не попадают' { Test-HookText $served -Lacks 'Метка сценария вне подачи', 'Метка этапа вне подачи' }
         Check 'файл решений — строка «когда:» в контексте, тело — нет' { Test-HookText $served 'правка эндпоинтов накладной' -Lacks 'тело решения вне подачи' }
 
+        # Сверх десятка находок шапка называет остаток числом и командой, красные — первыми.
+        Check 'находок больше десятка — в шапке десять, остаток числом и командой' {
+            $junk = @(1..12 | ForEach-Object { Join-Path $decisionsDir "лишний-$_.txt" })
+            foreach ($f in $junk) { Set-Content -LiteralPath $f -Value 'x' -Encoding utf8 }
+            Set-Content -LiteralPath (Join-Path $decisionsDir 'zz-red.md') -Encoding utf8 -Value '# Без строки когда'
+            try { $got = Invoke-HookHeader $repo }
+            finally { Remove-Item -LiteralPath ($junk + (Join-Path $decisionsDir 'zz-red.md')) -Force }
+            $section = [regex]::Match($got, '(?ms)^## Сверка базы\s*$(.*?)(?=^## |\z)').Groups[1].Value
+            $rows = @([regex]::Matches($section, '(?m)^- \*\*(FAIL|WARN)\*\*'))
+            if ($rows.Count -ne 10) { return "в шапке $($rows.Count) находок, ожидалось 10" }
+            if ($section -notmatch '…и ещё \d+ — все находки: `pwsh') { return 'остаток не назван числом и командой' }
+            $fail = [regex]::Match($section, '(?m)^- \*\*FAIL\*\*')
+            $warn = [regex]::Match($section, '(?m)^- \*\*WARN\*\*')
+            if ($fail.Success -and $warn.Success -and $fail.Index -gt $warn.Index) { return 'красная находка ниже предупреждения' }
+            return $null
+        }
+
         # Потолок рамок считается и на старте, и в коммите: файл лежит не в корне базы.
-        Check 'рамки оператора больше потолка — сверка и гейт называют' {
+        Check 'рамки оператора больше потолка — сверка и гейт называют, и со входом Codex' {
             $own = Join-Path (Get-OpDir $base) 'autonomy.md'
             $saved = Get-Content -LiteralPath $own -Raw
             Set-Content -LiteralPath $own -Encoding utf8 -Value (@('# Рамки') + @(1..31 | ForEach-Object { "- строка $_" }))
@@ -517,6 +590,8 @@ $stands = [ordered]@{
                 if ($problem) { return $problem }
                 $reason = Invoke-CommitGate $repo "git -C `"$(Get-MeDir $base)`" commit -m x -- `"$own`""
                 if ($reason -notmatch 'при потолке 30') { return "гейт не остановил: «$reason»" }
+                $reason = Invoke-CommitGate $repo "git -C `"$(Get-MeDir $base)`" commit -m x -- `"$own`"" -Codex
+                if ($reason -notmatch 'при потолке 30') { return "гейт со входом Codex не остановил: «$reason»" }
                 return $null
             }
             finally { Set-Content -LiteralPath $own -Value $saved -Encoding utf8 -NoNewline }
@@ -855,7 +930,7 @@ $stands = [ordered]@{
         }
 
         # Разделы tracker.md сверка берёт из таблицы раскладки: разбор не сошёлся — отказ и целому файлу.
-        Check 'tracker.md — все разделы гейт пускает, без раздела — отказ с /tracker' {
+        Check 'tracker.md — все разделы гейт пускает, без раздела — отказ со скиллом tracker' {
             $tracker = Join-Path $trkBase 'tracker.md'
             try {
                 Set-Content -LiteralPath $tracker -Encoding utf8 -Value (Get-TrackerText)
@@ -863,7 +938,7 @@ $stands = [ordered]@{
                 if ($reason) { return "гейт остановил полный файл: «$reason»" }
                 Set-Content -LiteralPath $tracker -Encoding utf8 -Value (Get-TrackerText -Count 4)
                 $reason = Invoke-CommitGate $trkRepo "git -C `"$trkBase`" commit -m x -- tracker.md"
-                if ($reason -notmatch 'Вынос записи бэклога' -or $reason -notmatch '/tracker') { return "гейт не назвал раздел и /tracker: «$reason»" }
+                if ($reason -notmatch 'Вынос записи бэклога' -or $reason -notmatch 'скиллом tracker') { return "гейт не назвал раздел и скилл tracker: «$reason»" }
                 return $null
             }
             finally { Remove-Item -LiteralPath $tracker -Force -ErrorAction SilentlyContinue }
@@ -893,7 +968,7 @@ $stands = [ordered]@{
                         if ($reason) { return "гейт остановил верные строки «$named»: «$reason»" }
                         continue
                     }
-                    if ($reason -notmatch '/tracker') { return "«$named»: гейт не назвал /tracker: «$reason»" }
+                    if ($reason -notmatch 'скиллом tracker') { return "«$named»: гейт не назвал скилл tracker: «$reason»" }
                     foreach ($want in $case.want) {
                         if ($reason -notmatch [regex]::Escape($want)) { return "«$named»: гейт не назвал «$want»: «$reason»" }
                     }
@@ -2045,13 +2120,13 @@ $stands = [ordered]@{
         Set-Content -LiteralPath (Join-Path $v4Base 'tracker.md') -Encoding utf8 -Value '# Проект — трекер', '', 'Задачи в GitHub, ходим gh.'
         Commit-All $v4Base 'формат 4'
 
-        Check 'перевод с формата 4 — прежний tracker.md удалён, вывод зовёт /tracker' {
+        Check 'перевод с формата 4 — прежний tracker.md удалён, вывод зовёт скилл tracker' {
             $before = Get-CommitCount $v4Base
             $r = Invoke-BaseMigrate $v1Migrate $v4Repo
             if ($r.code -ne 0) { return "код возврата $($r.code): $($r.text)" }
             if ((Get-MarkerFormat $v4Base) -ne $kitFormat) { return "формат $(Get-MarkerFormat $v4Base), ожидался $kitFormat" }
             if (Test-Path -LiteralPath (Join-Path $v4Base 'tracker.md')) { return 'tracker.md остался' }
-            if ($r.text -notmatch '/tracker') { return "вывод не называет /tracker: $($r.text)" }
+            if ($r.text -notmatch 'скиллом tracker') { return "вывод не называет скилл tracker: $($r.text)" }
             if ((Get-CommitCount $v4Base) -ne $before + $kitFormat - 4) { return "коммитов прибавилось $((Get-CommitCount $v4Base) - $before), ожидалось $($kitFormat - 4)" }
             $dirty = @(& git -C $v4Base status --porcelain --untracked-files=all | Where-Object { $_ })
             if ($dirty.Count) { return "в базе осталось незакоммиченное: $($dirty -join '; ')" }
@@ -2072,14 +2147,14 @@ $stands = [ordered]@{
         Set-Content -LiteralPath $v6Tracker -Encoding utf8 -Value (Get-TrackerText @())
         Commit-All $v6Base 'формат 6'
 
-        Check 'перевод с формата 6 — tracker.md не тронут, вывод зовёт /tracker, сверка называет строки' {
+        Check 'перевод с формата 6 — tracker.md не тронут, вывод зовёт скилл tracker, сверка называет строки' {
             $before = Get-CommitCount $v6Base
             $text = Get-Content -LiteralPath $v6Tracker -Raw
             $r = Invoke-BaseMigrate $v1Migrate $v6Repo
             if ($r.code -ne 0) { return "код возврата $($r.code): $($r.text)" }
             if ((Get-MarkerFormat $v6Base) -ne $kitFormat) { return "формат $(Get-MarkerFormat $v6Base), ожидался $kitFormat" }
             if ((Get-Content -LiteralPath $v6Tracker -Raw) -cne $text) { return 'tracker.md изменён' }
-            if ($r.text -notmatch 'нет строк трекера, сервера и проекта' -or $r.text -notmatch '/tracker') { return "вывод не называет строки и /tracker: $($r.text)" }
+            if ($r.text -notmatch 'нет строк трекера, сервера и проекта' -or $r.text -notmatch 'скиллом tracker') { return "вывод не называет строки и скилл tracker: $($r.text)" }
             if ((Get-CommitCount $v6Base) -ne $before + $kitFormat - 6) { return "коммитов прибавилось $((Get-CommitCount $v6Base) - $before), ожидалось $($kitFormat - 6)" }
             $dirty = @(& git -C $v6Base status --porcelain --untracked-files=all | Where-Object { $_ })
             if ($dirty.Count) { return "в базе осталось незакоммиченное: $($dirty -join '; ')" }
@@ -2349,8 +2424,10 @@ $kitRepo = {
         # Файл базы, которого нет в каркасе, назван в таблице «Куда именно» раскладки.
         $layout = Get-Content -LiteralPath (Join-Path $kit 'plugin\reference\base-layout.md') -Raw -Encoding utf8
         foreach ($m in [regex]::Matches($layout, '(?m)^\|\s*`([\p{L}\p{Nd}_.-]+\.md)`\s*\|')) { $names[$m.Groups[1].Value] = $true }
-        # CLAUDE.md в тексте кита — файл Claude Code в проекте под китом, а не файл кита.
+        # CLAUDE.md и AGENTS.md в тексте кита — файлы Claude Code и Codex в проекте под китом,
+        # а не файлы кита.
         $names['CLAUDE.md'] = $true
+        $names['AGENTS.md'] = $true
         $found = foreach ($entry in $kitText) {
             # Путь от корня репозитория, а в тексте внутри plugin — от plugin: так его видит
             # пользователь кита. .claude в plugin не лежит — его путь всегда от корня.
