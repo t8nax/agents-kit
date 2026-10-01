@@ -1,6 +1,6 @@
 {
   "name": "agents-kit",
-  "description": "Агентский кит для Claude Code.",
+  "description": "Агентский кит для Claude Code и Codex.",
   "owner": {
     "name": "Boris"
   },
