@@ -41,13 +41,13 @@ codex plugin add agents-kit@agents-kit
 
 Хуки кита Codex запускает, только когда вы им доверились: в сессии Codex наберите `/hooks` и разрешите хуки `agents-kit`.
 
-Дайте Codex запись в папку базы знаний и сеть — кит ваши настройки Codex не правит. Допишите в `~/.codex/config.toml`, указав папку базы:
+Песочницу Codex для работы с китом отключите — кит ваши настройки Codex не правит. Допишите в `~/.codex/config.toml`:
 
 ```toml
-[sandbox_workspace_write]
-writable_roots = ['<папка базы>']
-network_access = true
+sandbox_mode = "danger-full-access"
 ```
+
+Без песочницы агент Codex пишет в любое место на диске и ходит в сеть, ни о чём не спрашивая.
 
 В Codex кит работает так же, как в Claude Code, с двумя отличиями:
 
