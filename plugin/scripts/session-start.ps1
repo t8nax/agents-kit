@@ -1,10 +1,12 @@
 # agents-kit: хук SessionStart — подать сессии базу знаний её проекта.
 #
 # Перевод состояния связи из link-state.ps1 в текст для сессии: вне кита — молчание,
-# при разрыве — что чинить. Инварианты подаёт этот хук, а не user-level CLAUDE.md: так они
-# приходят только под китом.
+# при разрыве — что чинить. Читать инварианты велит этот хук, а не user-level CLAUDE.md: так они
+# действуют только под китом.
 $ErrorActionPreference = 'Stop'
 try { [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false) } catch { }
+
+$script:KitShownFindings = 10
 
 function Emit([string]$Text) {
     $payload = [ordered]@{
@@ -16,24 +18,39 @@ function Emit([string]$Text) {
     $payload | ConvertTo-Json -Depth 5 -Compress
 }
 
-# Знание базы подаётся содержимым: его читает каждая сессия. Список — base-check.ps1.
-function Read-KitBaseKnowledge([string]$BaseDir) {
-    $blocks = @()
-    foreach ($file in @(Get-KitServedFiles $BaseDir)) {
-        $text = Read-KitMarkdown $file.path
-        if (-not $text) { continue }
-        $blocks += "**$($file.label)**`n`n$text"
+# Подача — шапка с путями, а не содержимое: Codex режет вывод хука примерно до 10 тысяч знаков
+# и вырезает середину, а подача содержимым его превышала. Шапка одна на обоих агентов, чтобы
+# сессия Claude Code и сессия Codex работали по одному тексту. Файл без текста не называется:
+# читать нечего. Список файлов знания — base-check.ps1.
+function Read-KitReadFirst([string]$InvariantsPath, [string]$BaseDir) {
+    $lines = @()
+    if (Test-Path -LiteralPath $InvariantsPath -PathType Leaf) {
+        $lines += "- Инварианты кита: ``$(ConvertTo-KitPath $InvariantsPath)``"
     }
-    if (-not $blocks) { return '' }
+    foreach ($file in @(Get-KitServedFiles $BaseDir)) {
+        if (-not (Read-KitMarkdown $file.path)) { continue }
+        $lines += "- ``$($file.label)``: ``$(ConvertTo-KitPath $file.path)``"
+    }
+    if (-not $lines) { return '' }
 
     return @"
 
----
+## Прочитать первым делом
 
-Файлы знания базы целиком; в этой сессии они действуют.
+До всякой работы прочитать целиком — по ним работает эта сессия. HTML-комментарии в файлах базы — подсказки шаблона, а не знание проекта.
 
-$($blocks -join "`n`n")
+$($lines -join "`n")
 "@
+}
+
+# Агент сессии — по входу хука: у Codex журнал сессии называется rollout-*.jsonl, у Claude Code
+# лежит под .claude. Не опознан — так и названо, а не подставлен агент по умолчанию.
+function Get-KitSessionAgent($Payload) {
+    $transcript = [string]$Payload.transcript_path
+    if (-not $transcript) { return $null }
+    if ((Split-Path -Leaf $transcript) -like 'rollout-*') { return 'Codex' }
+    if ($transcript -match '[\\/]\.claude[\\/]') { return 'Claude Code' }
+    return $null
 }
 
 # Решения подаются оглавлением, собирает его base-check.ps1: содержимым каждая сессия платила бы
@@ -82,25 +99,26 @@ function Read-KitWorkMemory([string]$PersonalDir, [string]$Worktree) {
 "@
     }
 
-    # Неопознанная память не подаётся: получив чужую, сессия продолжила бы чужую работу как свою.
-    # Опознание — строкой внутри, не именем: слаг не взаимно однозначен, файл могли положить руками.
+    # Неопознанная память своей не называется: приняв чужую, сессия продолжила бы чужую работу
+    # как свою. Опознание — строкой внутри, не именем: слаг не взаимно однозначен, файл могли
+    # положить руками.
     $declared = Get-KitDeclaredWorktree $text
 
     if (-not $declared) {
         return @"
 
-## Рабочая память — не подана
+## Рабочая память — не опознана
 
-В файле ``$path`` нет строки ``рабочая копия: <путь>``, и **содержимое не подано.** Файл лежит по адресу этой копии: дописать в него ``рабочая копия: $worktree`` и продолжить работу.
+В файле ``$path`` нет строки ``рабочая копия: <путь>``, и **работу по нему не вести.** Файл лежит по адресу этой копии: дописать в него ``рабочая копия: $worktree`` и продолжить работу.
 "@
     }
 
     if ($declared -ine $worktree) {
         return @"
 
-## Рабочая память — не подана
+## Рабочая память — не опознана
 
-Файл ``$path`` объявляет рабочую копию ``$declared``, а сессия открыта в ``$worktree``. **Содержимое не подано: это чужая работа** — файл, положенный руками, или две копии с одним адресом. Решает оператор.
+Файл ``$path`` объявляет рабочую копию ``$declared``, а сессия открыта в ``$worktree``. **Работу по нему не вести: это чужая работа** — файл, положенный руками, или две копии с одним адресом. Решает оператор.
 "@
     }
 
@@ -108,9 +126,7 @@ function Read-KitWorkMemory([string]$PersonalDir, [string]$Worktree) {
 
 ## Рабочая память — ``$worktree``
 
-Файл ``$path``, и ведёт его эта сессия. Флоу задачи — ``$(ConvertTo-KitPath (Join-Path (Get-KitMemoryFlowRoot $path) $script:KitScenariosFile))`` и этапы рядом с ним.
-
-$text
+Файл ``$path``, и ведёт его эта сессия: прочитать первым делом. Флоу задачи — ``$(ConvertTo-KitPath (Join-Path (Get-KitMemoryFlowRoot $path) $script:KitScenariosFile))`` и этапы рядом с ним.
 "@
 }
 
@@ -119,7 +135,14 @@ $text
 function Read-KitBaseFindings([string]$BaseDir, [string]$Worktree) {
     try { $findings = @(Get-KitBaseFindings $BaseDir $Worktree) } catch { return '' }
     if (-not $findings.Count) { return '' }
-    $lines = $findings | ForEach-Object { "- **$($_.severity)** ``$($_.file)`` — $($_.message)" }
+    # Сверх десятка находок шапка вышла бы за предел Codex: остаток называется числом и командой.
+    $shown = @($findings | Select-Object -First $script:KitShownFindings)
+    $lines = @($shown | ForEach-Object { "- **$($_.severity)** ``$($_.file)`` — $($_.message)" })
+    $rest = $findings.Count - $shown.Count
+    if ($rest -gt 0) {
+        $check = ConvertTo-KitPath (Join-Path $PSScriptRoot 'base-check.ps1')
+        $lines += "- …и ещё $rest — все находки: ``pwsh -NoProfile -Command `". '$check'; Get-KitBaseFindings '$BaseDir' '$Worktree' | Format-List`"``"
+    }
     return @"
 
 ## Сверка базы
@@ -136,8 +159,10 @@ try {
 
     # Claude Code пишет JSON в UTF-8, а консоль хука — в кодовой странице системы.
     $raw = [System.IO.StreamReader]::new([Console]::OpenStandardInput(), [System.Text.UTF8Encoding]::new($false)).ReadToEnd()
+    $payload = $null
+    if ($raw) { try { $payload = ConvertFrom-Json $raw } catch { } }
     $cwd = $null
-    if ($raw) { try { $cwd = (ConvertFrom-Json $raw).cwd } catch { } }
+    if ($payload) { $cwd = $payload.cwd }
     if (-not $cwd) { $cwd = (Get-Location).Path }
     if (-not (Test-Path -LiteralPath $cwd -PathType Container)) { exit 0 }
 
@@ -243,16 +268,14 @@ try {
 
         'Linked' {
             $refDir = Join-Path $PSScriptRoot '..\reference'
-            $invPath = Join-Path $refDir 'invariants.md'
-            $invariants = ''
-            if (Test-Path -LiteralPath $invPath -PathType Leaf) {
-                $invariants = (Get-Content -LiteralPath $invPath -Raw).Trim()
-            }
-            $knowledge = Read-KitBaseKnowledge $state.base
+            $readFirst = Read-KitReadFirst (Join-Path $refDir 'invariants.md') $state.base
             $decisions = Read-KitDecisionIndex $state.base
             $findings = Read-KitBaseFindings $state.base $state.worktree
             # Память — последней: с неё сессия продолжает работу прямо сейчас.
             $work = Read-KitWorkMemory $state.personal $state.worktree
+            $agent = Get-KitSessionAgent $payload
+            $agentLine = '- Агент сессии: не опознан'
+            if ($agent) { $agentLine = "- Агент сессии: $agent" }
             # Справки подаются путём: правила файлов нужны только пишущей сессии, глоссарий —
             # только сессии, которой непонятно слово.
             $layoutLine = ''
@@ -274,15 +297,14 @@ try {
             Emit @"
 # agents-kit — проект под китом
 
-$nameLine- База знаний: ``$($state.base)``
+$nameLine$agentLine
+- База знаний: ``$($state.base)``
 - Оператор: ``$($state.operator)``, выложенное им для коллег — ``$($state.people)``
 - Личный репозиторий: ``$($state.personal)`` — рамки агента, флоу, субагенты, бэклог, память задач и их артефакты
 - Рабочая копия: ``$($state.worktree)``$mainLine$repoLine$layoutLine
 
-Знание проекта живёт только в базе. Ниже — инварианты кита, они действуют всегда.
-
-$invariants
-$knowledge
+Знание проекта живёт только в базе. Инварианты кита действуют всегда.
+$readFirst
 $decisions
 $findings
 $work
