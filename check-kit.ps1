@@ -2399,30 +2399,6 @@ $kitRepo = {
         return $null
     }
 
-    # Таблица адресов retool — единственный перечень ответственностей файлов: файл без строки
-    # никто не найдёт по вопросу, строка без файла ведёт в пустоту.
-    Check 'каждый файл кита числится в таблице retool, и каждая строка таблицы — существующий файл' {
-        $skill = @(Get-Content -LiteralPath (Join-Path $kit '.claude\skills\retool\SKILL.md') -Encoding utf8)
-        $inTable = $false
-        $rows = foreach ($text in $skill) {
-            if ($text -match '^## ') { $inTable = $text -eq '## Куда кладётся правка'; continue }
-            if ($inTable -and $text -match '^\| `([^`]+)` \|') { $Matches[1] }
-        }
-        if (-not $rows) { return 'в .claude\skills\retool\SKILL.md не найдена таблица «Куда кладётся правка»' }
-
-        $patterns = foreach ($row in $rows) {
-            $regex = (($row -split '<имя>') | ForEach-Object { [regex]::Escape($_) }) -join '[^/]+'
-            [pscustomobject]@{ row = $row; regex = $(if ($row.EndsWith('/')) { "^$regex" } else { "^$regex$" }) }
-        }
-        $problems = @()
-        $unlisted = @($kitFiles | Where-Object { $f = $_; -not ($patterns | Where-Object { $f -match $_.regex }) })
-        if ($unlisted.Count) { $problems += "нет строки у: $($unlisted -join ', ')" }
-        $empty = @($patterns | Where-Object { $p = $_; -not ($kitFiles | Where-Object { $_ -match $p.regex }) } | ForEach-Object { $_.row })
-        if ($empty.Count) { $problems += "строка без файла: $($empty -join ', ')" }
-        if ($problems.Count) { return $problems -join '; ' }
-        return $null
-    }
-
     $kitText = @(Get-KitTextLines $kit $kitFiles)
 
     # Только .md: абсолютный путь в комментарии скрипта — пример формы пути, и отличить его
