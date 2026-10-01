@@ -129,8 +129,8 @@ function Read-KitWorkMemory([string]$PersonalDir, [string]$Worktree) {
 "@
 }
 
-# Сверка подаётся находками: чистая база не стоит ни строки. Упала сверка — подача базы
-# остаётся: база без сверки лучше, чем сессия без базы.
+# Сверка подаётся находками: чистая база не стоит ни строки. Упала сверка — шапка остаётся:
+# шапка без сверки лучше, чем сессия без шапки.
 function Read-KitBaseFindings([string]$BaseDir, [string]$Worktree) {
     try { $findings = @(Get-KitBaseFindings $BaseDir $Worktree) } catch { return '' }
     if (-not $findings.Count) { return '' }

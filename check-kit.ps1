@@ -1,5 +1,5 @@
 # agents-kit: то ли делает кит на живых стендах — заводит базу, связывает с ней основную
-# копию, подаёт сессии её знание, сверяет коммит в базу, будит ждущую сессию ответом
+# копию, называет сессии её знание, сверяет коммит в базу, будит ждущую сессию ответом
 # оператора — и молчит ли там, где его не звали; после стендов — в порядке ли сам репозиторий кита.
 #   pwsh -NoProfile -File check-kit.ps1 [-Stand <стенд>[,<стенд>]] [-KeepTemp]
 #
@@ -538,8 +538,8 @@ $stands = [ordered]@{
         $decisionsDir = Join-Path $base 'decisions'
         Check 'решений нет — сессии названо, куда их заводить' { Test-HookText $linked 'решений пока нет' }
 
-        # Что подаётся и что нет — одно состояние на один вызов хука. Рамки — свои: подаются из личного
-        # репозитория, а лежащее в people\ не подаётся. Флоу нужен только скиллам flow и drive, и в каждую
+        # Что шапка велит прочитать и что нет — одно состояние на один вызов хука. Рамки — свои: из личного
+        # репозитория, а лежащее в people\ шапка не называет. Флоу нужен только скиллам flow и drive, и в каждую
         # сессию он не приезжает. Файл решений остаётся для проверки без «когда:».
         $team = Join-Path $base 'team.md'
         $own = Join-Path (Get-OpDir $base) 'autonomy.md'
@@ -568,7 +568,7 @@ $stands = [ordered]@{
         Check 'правила команды и рамки своего оператора — в контексте, рамки из people\ — нет' {
             Test-HookText $served 'без ревью не мержим', 'миграции схемы решает сам', 'local/me/autonomy.md' -Lacks 'рамка коллеги вне подачи'
         }
-        Check 'файл в корне базы сверх подаваемых — в контекст не попадает' { Test-HookText $served -Lacks 'строка из файла вне подачи' }
+        Check 'файл в корне базы сверх названных шапкой — в контекст не попадает' { Test-HookText $served -Lacks 'строка из файла вне подачи' }
         Check 'сценарии и этапы базы — в контекст не попадают' { Test-HookText $served -Lacks 'Метка сценария вне подачи', 'Метка этапа вне подачи' }
         Check 'файл решений — строка «когда:» в контексте, тело — нет' { Test-HookText $served 'правка эндпоинтов накладной' -Lacks 'тело решения вне подачи' }
 
@@ -702,7 +702,7 @@ $stands = [ordered]@{
             return Test-HookText $withMemory 'нет строки «сценарий:»'
         }
 
-        # Файл без объявленной копии не подаётся, но лежит по своему адресу: сессии называется
+        # Файл без объявленной копии своим не назван, но лежит по своему адресу: сессии называется
         # строка починки, иначе она бросит свою работу как чужую.
         Check 'файл без объявленной копии — сессии названа строка, которой чинится' {
             Set-Content -LiteralPath $script:memRepo -Encoding utf8 `
@@ -722,7 +722,7 @@ $stands = [ordered]@{
         }
 
         # Защита от совпадения слагов и от файла, положенного руками.
-        Check 'файл объявляет чужую копию — содержимое не подано' {
+        Check 'файл объявляет чужую копию — своим не назван' {
             Set-KitMemory $script:memRepo 'D:\Projects\stranger' 'это работа чужой копии'
             $problem = ExpectText $repo 'объявляет рабочую копию' -Lacks 'это работа чужой копии'
             Set-KitMemory $script:memRepo $repo 'дочитать формат позиции'
@@ -762,7 +762,7 @@ $stands = [ordered]@{
             return ExpectNoText $copy 'дочитать формат позиции'
         }
 
-        Check 'файл прямо в work/ — сверка называет, содержимое не подано' {
+        Check 'файл прямо в work/ — сверка называет, своим не назван' {
             $stray = Join-Path (Get-MeDir $base) 'work\stray.md'
             Set-KitMemory $stray $repo 'память вне каталога машины'
             $problem = ExpectText $repo 'вне каталога машины' -Lacks 'память вне каталога машины'
@@ -785,7 +785,7 @@ $stands = [ordered]@{
             Check 'вторая машина — оператор не назван, отчёт link.ps1 красный' { ExpectLinkReport $repo 1 'на этой машине не назван' }
             Invoke-BaseInit $base '' | Out-Null
             $second = Invoke-Hook $repo
-            Check 'вторая машина, тот же путь копии — адрес памяти свой, память первой не подана' {
+            Check 'вторая машина, тот же путь копии — адрес памяти свой, память первой своей не названа' {
                 $mem = Find-HookMemoryPath $second
                 if (-not $mem) { return "хук не назвал адрес памяти: $($second.Split("`n")[0])" }
                 if ($mem -ieq $script:memRepo) { return "адрес тот же, что у первой машины: $mem" }
@@ -1388,7 +1388,7 @@ $stands = [ordered]@{
         Invoke-BaseInit $baseBar | Out-Null
         & pwsh -NoProfile -File $link -Path $modFoo -Base $baseFoo -Scope Directory | Out-Null
 
-        Check 'связанный каталог монорепы — база подана' { ExpectText $modFoo $baseFoo }
+        Check 'связанный каталог монорепы — шапка подана' { ExpectText $modFoo $baseFoo }
         Check 'корень монорепы — хук молчит' { ExpectSilent $mono }
         Check 'несвязанный каталог монорепы — хук молчит' { ExpectSilent $modBar }
         Check 'подкаталог связанного — база та же' { ExpectText $modSrc $baseFoo }
@@ -1703,7 +1703,7 @@ $stands = [ordered]@{
             return $null
         }
 
-        Check 'доделать после сведения файла — отдано, хук снова подаёт базу' {
+        Check 'доделать после сведения файла — отдано, хук снова подаёт шапку' {
             Set-Content -LiteralPath (Join-Path $syncBaseB 'product.md') -Value '# Сведение — продукт', '', 'редакция машины A', 'редакция машины B' -Encoding utf8
             $r = Invoke-Sync $syncRepoB 'Base' 'Continue'
             if ($r.code -ne 0) { return "код $($r.code): $($r.text)" }
@@ -1837,7 +1837,7 @@ $stands = [ordered]@{
             $got = Invoke-Hook $migRepo $copyHook
             if ($got -notmatch 'база в прежнем формате') { return "нет остановки: $($got.Split("`n")[0])" }
             if ($got -notmatch 'base-migrate\.ps1') { return 'не названа команда перевода' }
-            if ($got -match 'Три слоя') { return 'поданы инварианты — работа со знанием не остановлена' }
+            if ($got -match 'Три слоя') { return 'названы инварианты — работа со знанием не остановлена' }
             return $null
         }
 
