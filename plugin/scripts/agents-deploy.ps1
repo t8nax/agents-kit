@@ -121,5 +121,5 @@ foreach ($name in $taken) {
 Write-Host ''
 Write-Host "Довезено: $($placed.Count), обновлено: $($updated.Count), убрано: $($removed.Count), без изменений: $kept"
 if ($placed.Count -or $updated.Count) {
-    Write-Host 'Звать довезённых можно со следующей сессии: набор субагентов собирается при её запуске.'
+    Write-Host 'Звать довезённых можно со следующей сессии Claude Code: набор субагентов собирается при её запуске. В Codex субагентов нет.'
 }
