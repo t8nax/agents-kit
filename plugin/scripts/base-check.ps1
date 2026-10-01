@@ -980,9 +980,9 @@ function Get-KitOwnMemoryFindings([string]$Base, [string]$Path, [string]$Label, 
     }
 }
 
-# О ходе живой соседней работы сверка молчит; называет только файл, который не подаст никто:
-# копии нет, адрес не сходится или файл не опознаётся, — иначе work/ молча стал бы архивом
-# брошенных задач. Содержимое не подаётся никогда.
+# О ходе живой соседней работы сверка молчит; называет только файл, который своим не назовёт
+# ни одна сессия: копии нет, адрес не сходится или файл не опознаётся, — иначе work/ молча стал бы
+# архивом брошенных задач.
 function Get-KitForeignMemoryFindings([string]$Base, [string]$Path, [string]$Label) {
     $declared = Get-KitDeclaredWorktree (Read-KitMarkdown $Path)
     if (-not $declared) {
