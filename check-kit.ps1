@@ -40,9 +40,13 @@ function Bad ([string]$m) { Write-Host "[ FAIL ] $m" -ForegroundColor Red; $scri
 
 # Хук зовётся дочерним процессом, как его зовут Claude Code и Codex: без окна, и консоль у него своя,
 # в кодовой странице системы, а не консоль сверки; JSON в stdin — UTF-8. Ответ — вывод хука.
-function Invoke-HookProcess([string]$Hook, [string]$Payload) {
+# Переменные Claude Code прогона сверки хуку не передаются: по ним хук опознаёт агента сессии,
+# и стенд зависел бы от того, откуда его запустили. Нужные стенду — -Env.
+function Invoke-HookProcess([string]$Hook, [string]$Payload, [hashtable]$Env = @{}) {
     $info = [System.Diagnostics.ProcessStartInfo]::new('pwsh')
     foreach ($a in '-NoProfile', '-File', $Hook) { $info.ArgumentList.Add($a) }
+    foreach ($k in @($info.Environment.Keys | Where-Object { $_ -like 'CLAUDE*' })) { [void]$info.Environment.Remove($k) }
+    foreach ($k in $Env.Keys) { $info.Environment[$k] = $Env[$k] }
     $info.RedirectStandardInput = $true
     $info.RedirectStandardOutput = $true
     $info.StandardInputEncoding = [System.Text.UTF8Encoding]::new($false)
@@ -57,10 +61,10 @@ function Invoke-HookProcess([string]$Hook, [string]$Payload) {
     return $out.Trim()
 }
 
-function Invoke-HookHeader([string]$Dir, [string]$Hook = $hook, [string]$Transcript) {
+function Invoke-HookHeader([string]$Dir, [string]$Hook = $hook, [string]$Transcript, [hashtable]$Env = @{}) {
     $input_ = @{ cwd = $Dir }
     if ($Transcript) { $input_.transcript_path = $Transcript }
-    $text = Invoke-HookProcess $Hook ($input_ | ConvertTo-Json -Compress)
+    $text = Invoke-HookProcess $Hook ($input_ | ConvertTo-Json -Compress) $Env
     if (-not $text) { return '' }
     try { return [string](($text | ConvertFrom-Json).hookSpecificOutput.additionalContext) }
     catch { return "!!НЕ-JSON!! $text" }
@@ -497,7 +501,7 @@ $stands = [ordered]@{
         }
 
         # Имя проекта — заголовок product.md без хвоста каркаса.
-        Check 'связанная копия — имя проекта в шапке подачи' { Test-HookText $linked "- Проект: Сверочный сервис`n" }
+        Check 'связанная копия — имя проекта в шапке' { Test-HookText $linked "- Проект: Сверочный сервис`n" }
         # Файлы знания сессия читает сама, с комментариями: шапка называет их подсказками шаблона.
         $header = Invoke-HookHeader $repo
         Check 'шапка называет HTML-комментарии подсказками, сама их не несёт' {
@@ -512,15 +516,20 @@ $stands = [ordered]@{
             return $null
         }
 
-        # Агент сессии — по журналу из входа хука; не опознан — так и названо.
+        # Агент сессии — по журналу из входа хука и переменным Claude Code; Codex — первым: из
+        # терминала Claude Code он наследует его переменные. Не опознан — так и названо.
         Check 'агент сессии — Codex, Claude Code или «не опознан»' {
+            $codex = 'C:\Users\x\.codex\sessions\2026\10\01\rollout-2026-10-01T10-00-00-abc.jsonl'
+            $claudeEnv = @{ CLAUDE_PROJECT_DIR = $repo }
             $cases = @(
-                @('C:\Users\x\.codex\sessions\2026\10\01\rollout-2026-10-01T10-00-00-abc.jsonl', 'Агент сессии: Codex'),
-                @('C:\Users\x\.claude\projects\c-repo\abc.jsonl', 'Агент сессии: Claude Code'),
-                @('', 'Агент сессии: не опознан'))
+                @($codex, @{}, 'Агент сессии: Codex'),
+                @($codex, $claudeEnv, 'Агент сессии: Codex'),
+                @('C:\Users\x\.claude\projects\c-repo\abc.jsonl', @{}, 'Агент сессии: Claude Code'),
+                @('D:\claude-config\projects\c-repo\abc.jsonl', $claudeEnv, 'Агент сессии: Claude Code'),
+                @('', @{}, 'Агент сессии: не опознан'))
             foreach ($case in $cases) {
-                $problem = Test-HookText (Invoke-HookHeader $repo $hook $case[0]) $case[1]
-                if ($problem) { return "журнал «$($case[0])»: $problem" }
+                $problem = Test-HookText (Invoke-HookHeader $repo $hook $case[0] $case[1]) $case[2]
+                if ($problem) { return "журнал «$($case[0])», переменные «$($case[1].Keys -join ', ')»: $problem" }
             }
             return $null
         }
@@ -567,16 +576,25 @@ $stands = [ordered]@{
         Check 'находок больше десятка — в шапке десять, остаток числом и командой' {
             $junk = @(1..12 | ForEach-Object { Join-Path $decisionsDir "лишний-$_.txt" })
             foreach ($f in $junk) { Set-Content -LiteralPath $f -Value 'x' -Encoding utf8 }
-            Set-Content -LiteralPath (Join-Path $decisionsDir 'zz-red.md') -Encoding utf8 -Value '# Без строки когда'
-            try { $got = Invoke-HookHeader $repo }
-            finally { Remove-Item -LiteralPath ($junk + (Join-Path $decisionsDir 'zz-red.md')) -Force }
-            $section = [regex]::Match($got, '(?ms)^## Сверка базы\s*$(.*?)(?=^## |\z)').Groups[1].Value
+            Set-Content -LiteralPath (Join-Path $decisionsDir 'я-красный.md') -Encoding utf8 -Value '# Без строки когда'
+            try {
+                $got = Invoke-HookHeader $repo
+                $section = [regex]::Match($got, '(?ms)^## Сверка базы\s*$(.*?)(?=^## |\z)').Groups[1].Value
+                $rest = [regex]::Match($section, '…и ещё (\d+) — все находки: `pwsh -NoProfile -Command "([^`]+)"`')
+                # Команда остатка прогоняется: она и есть то, чем сессия увидит всё.
+                $all = ''
+                if ($rest.Success) { $all = (& pwsh -NoProfile -Command $rest.Groups[2].Value 2>&1) -join "`n" }
+            }
+            finally { Remove-Item -LiteralPath ($junk + (Join-Path $decisionsDir 'я-красный.md')) -Force }
             $rows = @([regex]::Matches($section, '(?m)^- \*\*(FAIL|WARN)\*\*'))
             if ($rows.Count -ne 10) { return "в шапке $($rows.Count) находок, ожидалось 10" }
-            if ($section -notmatch '…и ещё \d+ — все находки: `pwsh') { return 'остаток не назван числом и командой' }
+            if (-not $rest.Success) { return 'остаток не назван числом и командой' }
+            if ($all -notmatch 'лишний-12\.txt' -or $all -notmatch 'я-красный\.md') { return "команда остатка не показала все находки: $all" }
+            # Красная находка файла решений в списке последняя: в шапке она — только если красные идут первыми.
+            if ($section -notmatch '(?m)^- \*\*FAIL\*\* `decisions[\\/]я-красный\.md`') { return 'красной находки нет в шапке — красные не первые' }
             $fail = [regex]::Match($section, '(?m)^- \*\*FAIL\*\*')
             $warn = [regex]::Match($section, '(?m)^- \*\*WARN\*\*')
-            if ($fail.Success -and $warn.Success -and $fail.Index -gt $warn.Index) { return 'красная находка ниже предупреждения' }
+            if ($warn.Success -and $fail.Index -gt $warn.Index) { return 'красная находка ниже предупреждения' }
             return $null
         }
 

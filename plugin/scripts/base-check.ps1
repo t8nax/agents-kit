@@ -38,7 +38,7 @@ function Get-KitOperatorRoot([string]$Base) {
     return [pscustomobject]@{ dir = (Get-KitPersonalDir $Base); label = 'local/me'; name = $name }
 }
 
-# Подаваемые файлы этой машины: { path; label — подпись от корня базы; name — ключ потолка }.
+# Файлы, которые шапка велит прочитать на этой машине: { path; label — подпись от корня базы; name — ключ потолка }.
 # Имени оператора нет — файлов личного репозитория нет.
 function Get-KitServedFiles([string]$Base) {
     foreach ($name in $script:KitServedFiles) {
@@ -76,7 +76,7 @@ function Read-KitMarkdown([string]$Path) {
     return ConvertTo-KitMarkdown $text
 }
 
-# Имя проекта для шапки подачи; где оно живёт — reference\base-layout.md. Хвост
+# Имя проекта для шапки; где оно живёт — reference\base-layout.md. Хвост
 # « — продукт» из каркаса именем не считается. Заголовка нет — имени нет, а не имя папки.
 function Get-KitProjectName([string]$Base) {
     $text = Read-KitMarkdown (Join-Path $Base 'product.md')
@@ -628,7 +628,7 @@ function Get-KitTrackerFindings([string]$Path, [string]$Label, $Rules) {
 }
 
 # Каркас на месте — в корне базы и в личном репозитории, своя папка оператора в базе есть;
-# подаваемые файлы в потолке; бэклог сходится со счётчиком и перечнем полей, tracker.md — с разделами
+# файлы, которые шапка велит прочитать, в потолке; бэклог сходится со счётчиком и перечнем полей, tracker.md — с разделами
 # и строками трекера.
 # О прочих файлах сверх каркаса сверка молчит.
 function Get-KitRootFindings([string]$Base, $Ceilings) {
