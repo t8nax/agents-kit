@@ -18,9 +18,7 @@ function Emit([string]$Text) {
     $payload | ConvertTo-Json -Depth 5 -Compress
 }
 
-# Подача — шапка с путями, а не содержимое: Codex режет вывод хука примерно до 10 тысяч знаков
-# и вырезает середину, а подача содержимым его превышала. Шапка одна на обоих агентов, чтобы
-# сессия Claude Code и сессия Codex работали по одному тексту. Файл без текста не называется:
+# Шапка называет файлы путями, а не подаёт их содержимое. Файл без текста не называется:
 # читать нечего. Список файлов знания — base-check.ps1.
 function Read-KitReadFirst([string]$InvariantsPath, [string]$BaseDir) {
     $lines = @()
@@ -72,7 +70,7 @@ function Read-KitDecisionIndex([string]$BaseDir) {
 
 ## Решения базы
 
-``$dir``, по файлу на область, содержимым не поданы; когда читать — раздел «Решения» раскладки.
+``$dir``, по файлу на область; когда читать — раздел «Решения» раскладки.
 
 $($lines -join "`n")
 "@
@@ -159,7 +157,7 @@ try {
     . (Join-Path $PSScriptRoot 'link-state.ps1')
     . (Join-Path $PSScriptRoot 'base-check.ps1')
 
-    # Claude Code пишет JSON в UTF-8, а консоль хука — в кодовой странице системы.
+    # Агент пишет JSON в UTF-8, а консоль хука — в кодовой странице системы.
     $raw = [System.IO.StreamReader]::new([Console]::OpenStandardInput(), [System.Text.UTF8Encoding]::new($false)).ReadToEnd()
     $payload = $null
     if ($raw) { try { $payload = ConvertFrom-Json $raw } catch { } }

@@ -126,7 +126,7 @@ try {
     . (Join-Path $PSScriptRoot 'link-state.ps1')
     . (Join-Path $PSScriptRoot 'base-check.ps1')
 
-    # Claude Code пишет JSON в UTF-8, а консоль хука — в кодовой странице системы.
+    # Агент пишет JSON в UTF-8, а консоль хука — в кодовой странице системы.
     $raw = [System.IO.StreamReader]::new([Console]::OpenStandardInput(), [System.Text.UTF8Encoding]::new($false)).ReadToEnd()
     if (-not $raw) { exit 0 }
     $payload = ConvertFrom-Json $raw
