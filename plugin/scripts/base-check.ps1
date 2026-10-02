@@ -841,16 +841,17 @@ function Find-KitStrayStageSection([string]$Text) {
 }
 
 # Разделы памяти и связь двух её частей. Без «Сценария» и «Шагов» молча выключается сверка
-# хода задачи — FAIL; строка агенту без своего критерия или вопроса — не ошибка формы,
-# а повод перечитать: WARN.
+# хода задачи — FAIL; строка агенту без своего вопроса — не ошибка формы, а повод
+# перечитать: WARN. Разделы вне шаблона не судятся: у памяти, заведённой прежним китом,
+# остаётся свой раздел над «Оператору», и задача доводится с ним.
 function Get-KitMemoryLayoutFindings([string]$Text, [string]$Label) {
-    foreach ($section in 'Критерии закрытия', 'Оператору', 'Агенту') {
+    foreach ($section in 'Оператору', 'Агенту') {
         if ($Text -notmatch "(?m)^##\s+$([regex]::Escape($section))\s*$") {
             New-KitFinding 'WARN' $Label "нет раздела «## $section» из шаблона памяти"
         }
     }
     $agent = Get-KitLayoutSection $Text '## Агенту'
-    foreach ($sub in 'Критерии', 'Вопросы', 'Факты', 'Сценарий', 'Шаги') {
+    foreach ($sub in 'Вопросы', 'Факты', 'Сценарий', 'Шаги') {
         if (Test-KitAgentSubsection $Text $sub) { continue }
         if ($sub -notin 'Сценарий', 'Шаги') {
             New-KitFinding 'WARN' $Label "нет подраздела «### $sub» в «Агенту» из шаблона памяти"
@@ -861,12 +862,6 @@ function Get-KitMemoryLayoutFindings([string]$Text, [string]$Label) {
         else { New-KitFinding 'FAIL' $Label "нет подраздела «### $sub» в «Агенту» из шаблона памяти" }
     }
 
-    $criteria = @([regex]::Matches((Get-KitLayoutSection $Text '## Критерии закрытия'), '(?m)^###\s+(\d+)\.') | ForEach-Object { $_.Groups[1].Value })
-    foreach ($m in [regex]::Matches((Get-KitLayoutSection $agent '### Критерии'), '(?m)^\s*-\s+(\d+)\.')) {
-        if ($criteria -notcontains $m.Groups[1].Value) {
-            New-KitFinding 'WARN' $Label "«Агенту → Критерии»: строка $($m.Groups[1].Value). без критерия с этим номером — номер строки повторяет заголовок «### N.» критерия"
-        }
-    }
     $questions = @(Get-KitOperatorQuestions $Text | ForEach-Object { $_.text })
     foreach ($m in [regex]::Matches((Get-KitLayoutSection $agent '### Вопросы'), '(?m)^\s*-\s+«(.+?)»\s*:')) {
         if ($questions -cnotcontains $m.Groups[1].Value) {
