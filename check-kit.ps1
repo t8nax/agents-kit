@@ -1205,7 +1205,6 @@ $stands = [ordered]@{
             return ExpectText $tfRepo 'нет подраздела «### Шаги»' -Lacks '«Шаги» пусты'
         }
 
-        # Памяти, заведённой прежним китом, остаётся раздел критериев закрытия: задача доводится с ним.
         $tfShape = {
             param([string[]]$Top, [string[]]$Agent)
             Set-Content -LiteralPath $tfMem -Encoding utf8 -Value (
